@@ -18,7 +18,8 @@ the band of the strongest open references:
 | DiariZen large-v2 (open) | 92.1% | 18.2% |
 | pyannote community-1 (open) | 80.7% | 28.4% |
 | **diar-rs (open) — target** | **≥ ~90%** | — |
-| **diar-rs Rust (measured)** | **90.1%** | 14.8% |
+| **diar-rs Python v2 (measured)** | **91.8%** | 18.8% (17.2% with `--prepad 0.3`) |
+| diar-rs Rust v1 (measured) | 90.1% | 14.8% |
 
 These are open reference systems, used only as **targets** for relative
 comparison — not a bar we must match exactly.
@@ -48,11 +49,16 @@ start; adjacent same-speaker turns merged). The harness rasterizes timelines at
 
 ## Known limitations
 
-- **Single annotated meeting** (06-29, ~15 min, 3 speakers). A result on one
-  file is not conclusive; `docs/HANDOFF.md` tracks adding public RTTM benchmarks
+- **Single annotated meeting** (06-29, ~15 min). A result on one file is not
+  conclusive; `docs/HANDOFF.md` tracks adding public RTTM benchmarks
   (VoxConverse / AMI / Aishell-4) for breadth.
-- The short third speaker (~23 s of brief replies) is missed by every system;
-  it is the known hard case to attack.
+- **The GT is a commercial transcription system's output, not human
+  annotation.** Its timestamps are turn *starts* only (turn end = next turn's
+  start), so inter-turn silence is attributed to the previous speaker and
+  hyp "miss" is structurally inflated. Its third speaker (S2, ~23 s of
+  back-channels) does not embed as one coherent voice and at least one S2
+  turn reads as the main candidate speaking — treat S2 as annotation noise,
+  not a recall target (see `docs/HANDOFF.md`).
 
 ## Open weights & licensing
 

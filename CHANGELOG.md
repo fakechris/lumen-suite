@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.0] — 2026-07-18
+
+### v2 pipeline (Python): local segmentation + speaker-masked embeddings
+`diar_lab.cli <wav> --v2` (`pipeline_v2.py`). The segmentation model is now
+used as a local diarizer (pyannote-3.x style) instead of a VAD: overlapping
+16 s windows (hop 8 s) → per-window per-speaker powerset activity → one
+speaker-masked embedding per (window, local speaker), CMN over that speaker's
+frames → AHC (duration-based min cluster) → overlap-add aggregation →
+primary-label frame track → turns. Options: `--cluster-space {xvec,raw}`,
+`--prepad <s>`, `--emb <onnx>`.
+
+Reference meeting (vs GT): frame_acc **89.0% → 91.8%** (DiariZen large-v2
+band), turn-majority 72.7% → 80.9%; `--prepad 0.3` trades to DER **17.2%**
+(< large-v2's 18.2%) with 91.3% / 82.7%.
+
+### Eval
+- `best_map_acc`: optimal hyp→ref speaker assignment (Hungarian) instead of
+  greedy first-K permutation; existing scores unchanged.
+- Documented: reference GT is a commercial system's output; its 23 s third
+  speaker (S2) does not embed as a coherent voice — annotation noise, not a
+  recall target (see `docs/HANDOFF.md`, `docs/PROBLEM.md`).
+
+### Models
+- `fetch_models.py --only emb_cnceleb.onnx`: WeSpeaker CnCeleb ResNet34-LM
+  (Chinese-data embedding) for `--v2 --cluster-space raw` on Mandarin audio.
+
 ## [0.1.0] — 2026-07-18
 
 First release of **diar-rs**: an open-source speaker-diarization toolkit (Rust

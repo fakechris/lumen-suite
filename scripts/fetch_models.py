@@ -30,6 +30,8 @@ TOKEN_FILE = ROOT / ".hf_token"
 
 WEBSPEAKER_REPO = "Wespeaker/wespeaker-voxceleb-resnet34-LM"
 WEBSPEAKER_FILE = "voxceleb_resnet34_LM.onnx"
+CNCELEB_REPO = "Wespeaker/wespeaker-cnceleb-resnet34-LM"
+CNCELEB_FILE = "cnceleb_resnet34_LM.onnx"
 DIARIZEN_REPO = "butspeechd/diarizen-wavlm-base"
 SILERO_URL = "https://huggingface.co/silero/silero-vad/resolve/main/silero_vad.onnx"
 
@@ -96,7 +98,8 @@ def main() -> None:
     ap.add_argument("--models-dir", default=str(MODELS))
     ap.add_argument("--accept-nc", action="store_true",
                     help="required to download the non-commercial DiariZen weights")
-    ap.add_argument("--only", action="append", choices=["silero_vad.onnx", "emb.onnx", "seg.onnx"],
+    ap.add_argument("--only", action="append",
+                    choices=["silero_vad.onnx", "emb.onnx", "emb_cnceleb.onnx", "seg.onnx"],
                     help="limit to these targets (repeatable)")
     ap.add_argument("--list-diarizen", action="store_true",
                     help="just list the DiariZen repo files (with token) and exit")
@@ -106,6 +109,8 @@ def main() -> None:
     out = Path(args.models_dir)
     out.mkdir(parents=True, exist_ok=True)
     want = set(args.only) if args.only else {"silero_vad.onnx", "emb.onnx", "seg.onnx"}
+    # emb_cnceleb.onnx is opt-in (--only emb_cnceleb.onnx): Chinese-data
+    # embedding for `--v2 --cluster-space raw` on Mandarin audio.
 
     if args.list_diarizen:
         try:
@@ -132,6 +137,8 @@ def main() -> None:
         plan.append(("silero_vad.onnx", SILERO_URL, None))
     if "emb.onnx" in want:
         plan.append(("emb.onnx", f"https://huggingface.co/{WEBSPEAKER_REPO}/resolve/main/{WEBSPEAKER_FILE}", None))
+    if "emb_cnceleb.onnx" in want:
+        plan.append(("emb_cnceleb.onnx", f"https://huggingface.co/{CNCELEB_REPO}/resolve/main/{CNCELEB_FILE}", None))
     if "seg.onnx" in want:
         try:
             plan.append(("seg.onnx", resolve_diarizen_seg(token), "DiariZen (NC)"))

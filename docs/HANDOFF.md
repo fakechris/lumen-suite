@@ -19,16 +19,29 @@ human annotation (see `docs/PROBLEM.md`).
 
 ## Results on the reference meeting (vs human GT)
 
-| System | frame_acc | DER | speakers |
-|---|---:|---:|---:|
-| DiariZen large-v2 (open ref) | 92.1% | 18.2% | 3 |
-| **diar-rs Rust (own ONNX)** | **90.1%** | 14.8% | 2 |
-| diar-rs Python (own ONNX) | 89.0% | 18.1% | 2 |
-| pyannote community-1 (open ref) | 80.7% | 28.4% | 4 |
+| System | frame_acc | DER | turn-maj | speakers |
+|---|---:|---:|---:|---:|
+| **diar-rs Python v2** (`--v2`) | **91.8%** | 18.8% | 80.9% | 2 |
+| diar-rs Python v2 (`--v2 --prepad 0.3`) | 91.3% | **17.2%** | 82.7% | 2 |
+| DiariZen large-v2 (open ref) | 92.1% | 18.2% | — | 3 |
+| diar-rs Rust (v1 arch) | 90.1% | 14.8% | 77.3% | 2 |
+| diar-rs Python v1 | 89.0% | 18.1% | 72.7% | 2 |
+| pyannote community-1 (open ref) | 80.7% | 28.4% | — | 4 |
 
-Rust is within ~1 pt of the Python lab; both sit at the open-reference band
-(~90–92%). The brief third speaker (~23 s of short replies) is missed by every
-system and is the main remaining gap.
+v2 (`python/diar_lab/pipeline_v2.py`) reaches the DiariZen large-v2 band with
+the *base* seg model by using it as a local diarizer instead of a VAD:
+overlapping 16 s windows → per-window per-speaker activity → speaker-masked
+embeddings → AHC → overlap-add → primary-label track. v1 collapsed the
+powerset output into a binary speech mask and slid fixed 1.5 s windows over
+it, which mixed speakers around turn boundaries (v1's main error source).
+
+**About the "third speaker":** GT S2 (~23 s of back-channels) is unreliable.
+The reference transcript is itself a commercial system's output, its S2 turns
+are mostly "嗯/对/啊", the audio snippets behind them do not embed as one
+coherent voice (pairwise cosine below the random-pair mean, for both VoxCeleb
+and CnCeleb WeSpeaker models), and at least one S2 turn reads as the main
+candidate speaking. Treat S2 as annotation noise, not a recall target;
+validate speaker-count behavior on public corpora instead.
 
 ## Status by stage
 
@@ -71,13 +84,22 @@ meeting (06-29) is not conclusive; ≥5 files aggregate DER is the credibility b
 
 ## TODOs
 
-- Rust VBx refine (currently AHC-only; VBx collapses on this open embedding space in the Python lab too).
-- npz-native PLDA loader in Rust (currently npz → `.bin` conversion).
-- Multi-file DER on a public corpus.
+- **Port the v2 architecture to the Rust crate** (Rust still runs the v1
+  seg-as-VAD pipeline; v2 is Python-only so far).
+- Multi-file DER on a public corpus (VoxConverse / AMI / Aishell-4) — the
+  single reference meeting is saturated (~92% is its practical ceiling with
+  these weights; the residual is GT-convention artifacts + boundary noise).
 - **Commercial-safe segmentation**: replace the NC DiariZen weights — train an
   MIT-licensed head on `microsoft/wavlm-base` with the DiariZen recipe, or swap
   to NeMo Sortformer (Apache-2.0). `onnx_seg.rs` reads the class dim at load, so
-  either is near drop-in.
+  either is near drop-in. This is the blocker for any commercial deployment.
+- Chinese-data embedding (`models/emb_cnceleb.onnx`, fetched via
+  `fetch_models.py --only emb_cnceleb.onnx`) with `--cluster-space raw`: same
+  band on the reference meeting; likely helps on broader Chinese audio — needs
+  a corpus run to decide the default.
+- Rust VBx refine (VBx collapses on this open embedding space in the Python
+  lab too — including on v2's speaker-pure embeddings; low priority).
+- npz-native PLDA loader in Rust (currently npz → `.bin` conversion).
 
 ## Build note (knf)
 
