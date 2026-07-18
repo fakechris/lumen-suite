@@ -31,7 +31,6 @@ import argparse
 import json
 import re
 import unicodedata
-from itertools import permutations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -150,21 +149,29 @@ def raster(tl: List[dict], step: float, n: int) -> np.ndarray:
 def best_map_acc(
     ref: np.ndarray, hyp: np.ndarray
 ) -> Tuple[float, Dict[int, int], float, float, float, float]:
-    """Return frame_acc, map hyp→ref, miss, fa, conf, der on speech union."""
+    """Return frame_acc, map hyp→ref, miss, fa, conf, der on speech union.
+
+    The hyp→ref speaker mapping is the optimal one-to-one assignment by
+    frame overlap (Hungarian), so a hyp with more clusters than the ref is
+    scored under its best subset instead of a greedy first-K choice.
+    """
+    from scipy.optimize import linear_sum_assignment
+
     both = (ref >= 0) & (hyp >= 0)
     speech = (ref >= 0) | (hyp >= 0)
     sp_ref = sorted(set(ref[ref >= 0].tolist()))
     sp_hyp = sorted(set(hyp[hyp >= 0].tolist()))
     best, mp = 0.0, {}
-    if sp_ref and sp_hyp:
-        for perm in permutations(sp_ref, min(len(sp_hyp), len(sp_ref))):
-            mapping = {a: b for a, b in zip(sp_hyp[: len(perm)], perm)}
-            mapped = np.array(
-                [mapping.get(int(x), -9) if x >= 0 else -1 for x in hyp]
-            )
-            acc = float((mapped[both] == ref[both]).mean()) if both.any() else 0.0
-            if acc > best:
-                best, mp = acc, mapping
+    if sp_ref and sp_hyp and both.any():
+        overlap = np.zeros((len(sp_hyp), len(sp_ref)))
+        for i, h in enumerate(sp_hyp):
+            hm = both & (hyp == h)
+            for j, r in enumerate(sp_ref):
+                overlap[i, j] = float((hm & (ref == r)).sum())
+        rows, cols = linear_sum_assignment(-overlap)
+        mp = {sp_hyp[i]: sp_ref[j] for i, j in zip(rows, cols)}
+        mapped = np.array([mp.get(int(x), -9) if x >= 0 else -1 for x in hyp])
+        best = float((mapped[both] == ref[both]).mean())
     if not speech.any() or not mp:
         return best, mp, 1.0, 1.0, 1.0, 1.0
     mapped = np.array([mp.get(int(x), -9) if x >= 0 else -1 for x in hyp])
