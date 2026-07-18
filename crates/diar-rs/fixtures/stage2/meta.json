@@ -1,0 +1,27 @@
+{
+  "sr": 16000,
+  "snippet_start_sec": 30.0,
+  "snippet_sec": 2.0,
+  "fbank_shape": [
+    198,
+    80
+  ],
+  "fbank_nomean_shape": [
+    198,
+    80
+  ],
+  "emb_dim": 256,
+  "seg2_shape": [
+    99,
+    11
+  ],
+  "seg10_shape": [
+    499,
+    11
+  ],
+  "emb_l2": 2.1996587301238986,
+  "seg_paths": {
+    "seg": "models/seg.onnx (redacted: parity-fixture metadata, paths not used at runtime)",
+    "emb": "models/emb.onnx (redacted)"
+  }
+}
