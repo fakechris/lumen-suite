@@ -6,7 +6,17 @@ Output contract: logits    [B, 799, 11]    (11-class powerset, ~50 Hz frames)
 
 Run with the diarizen venv (has torch + the diarizen package):
   export HF_TOKEN=$(cat .hf_token)
-  <diarizen-venv>/python scripts/export_diarizen_seg.py
+  <diarizen-venv>/python scripts/export_diarizen_seg.py            # base
+  <diarizen-venv>/python scripts/export_diarizen_seg.py \
+      --repo BUT-FIT/diarizen-wavlm-large-s80-md --out models/seg_large.onnx
+
+wavlm-large note: its waveform pre-norm (`F.layer_norm(x, x.shape[-1:])`)
+breaks the TorchScript ONNX exporter (dynamic normalized_shape). Apply
+scripts/diarizen_wavlm_large_export.patch to the DiariZen clone first —
+it swaps in the mathematically identical mean/var normalization.
+Env recipe that works: torch==2.5.1, numpy<2, DiariZen's vendored
+pyannote-audio fork installed editable with its pkg_resources
+`pyannote/__init__.py` removed (PEP-420 namespace merging).
 """
 from __future__ import annotations
 

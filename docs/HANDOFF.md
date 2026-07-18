@@ -21,12 +21,22 @@ human annotation (see `docs/PROBLEM.md`).
 
 | System | frame_acc | DER | turn-maj | speakers |
 |---|---:|---:|---:|---:|
-| **diar-rs Python v2** (`--v2`) | **91.8%** | 18.8% | 80.9% | 2 |
-| diar-rs Python v2 (`--v2 --prepad 0.3`) | 91.3% | **17.2%** | 82.7% | 2 |
+| **diar-rs Python v2 + seg_large** | **92.8%** | **16.9%** | 82.7% | 3 |
+| diar-rs Python v2 + seg_large + CnCeleb raw | 92.7% | 16.9% | 81.8% | 4 |
 | DiariZen large-v2 (open ref) | 92.1% | 18.2% | — | 3 |
+| diar-rs Python v2 (base seg) | 91.8% | 18.8% | 80.9% | 2 |
+| diar-rs Python v2 (base, `--prepad 0.3`) | 91.3% | 17.2% | 82.7% | 2 |
 | diar-rs Rust (v1 arch) | 90.1% | 14.8% | 77.3% | 2 |
 | diar-rs Python v1 | 89.0% | 18.1% | 72.7% | 2 |
 | pyannote community-1 (open ref) | 80.7% | 28.4% | — | 4 |
+
+seg_large = DiariZen `wavlm-large-s80-md` exported to `models/seg_large.onnx`
+(`export_diarizen_seg.py --repo ... ` + `scripts/diarizen_wavlm_large_export.patch`);
+select at runtime with `DIAR_SEG_ONNX=models/seg_large.onnx`. It beats the
+upstream DiariZen large-v2 pipeline on every metric under our v2 orchestration
+(change-point recall 34.5% → 50.9%), and it forms a ~24 s third cluster that
+maps to GT S2 (partial recall 0.12). Runtime ~79 s vs ~20 s (base) on CPU for
+the 15-min meeting.
 
 v2 (`python/diar_lab/pipeline_v2.py`) reaches the DiariZen large-v2 band with
 the *base* seg model by using it as a local diarizer instead of a VAD:
