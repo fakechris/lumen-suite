@@ -13,7 +13,7 @@ Open-source **speaker diarization** toolkit: **Rust library** for shipping + **P
 
 **Primary goal:** approach **human-annotated diarization / transcript ground truth (GT)** as closely as practical on real multi-speaker meetings.
 
-**Not a goal:** reverse-engineering closed apps, binary matching, or "native product Detect" parity as a success criterion.
+**Not a goal:** matching any specific closed-source system, or treating any one binary's output as the success criterion.
 
 Success is measured against our labeled meetings:
 

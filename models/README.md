@@ -7,8 +7,8 @@ User-supplied open weights, populated by `../scripts/fetch_models.py`. **Gitigno
 | File (target name) | Model | License | Source |
 |---|---|---|---|
 | `silero_vad.onnx` | Silero VAD (not yet wired; seg provides speech activity) | MIT | https://github.com/snakers4/silero-vad |
-| `emb.onnx` | WeSpeaker ResNet34-LM (256-d, 6.63M) | toolkit Apache-2.0; weights CC-BY-4.0 (verify) | https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM |
-| `seg.onnx` | DiariZen WavLM-conformer, **ONNX export** of the PyTorch checkpoint (11-class powerset) | code MIT; **weights non-commercial** ⚠️ | https://huggingface.co/BUT-FIT/diarizen-wavlm-base-s80-md (export via `scripts/export_diarizen_seg.py`) |
+| `emb.onnx` | WeSpeaker ResNet34-LM (256-d, 6.63M) | **CC-BY-4.0** (commercial OK, attribution) | https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM |
+| `seg.onnx` | DiariZen WavLM-conformer, **ONNX export** of the PyTorch checkpoint (11-class powerset) | **CC-BY-NC-4.0** (non-commercial) ⚠️ | https://huggingface.co/BUT-FIT/diarizen-wavlm-base-s80-md (export via `scripts/export_diarizen_seg.py`) |
 | `plda/` | open PLDA npz (`plda.npz` + `xvec_transform.npz`, 256→128) | Apache-2.0 | same DiariZen repo (`plda/*`) |
 
 ## ⚠️ Non-commercial: DiariZen segmentation weights

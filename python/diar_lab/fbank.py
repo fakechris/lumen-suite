@@ -1,7 +1,7 @@
-"""Kaldi-native fbank matching WeSpeaker / EmbResnet34 input.
+"""Kaldi-native fbank for the WeSpeaker ResNet34 embedding frontend.
 
-WeSpeaker ResNet34 expects 80-dim log-mel, 25ms window / 10ms shift @ 16 kHz.
-kaldi-native-fbank is the closest open implementation to FbankFast.
+WeSpeaker ResNet34 expects 80-dim log-mel, 25 ms window / 10 ms shift @ 16 kHz;
+`kaldi-native-fbank` (Apache-2.0) computes exactly that.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def compute_fbank_knf(
     x = np.asarray(pcm, dtype=np.float32).ravel()
     peak = float(np.max(np.abs(x))) if x.size else 0.0
     if peak <= 1.5:
-        # Native C++: pcm_float * 32768 → int16 → FbankFast
+        # legacy float→int16 frontend path (pcm_float * 32768 → int16)
         # knf + emb.onnx: float [-1,1] is the better-calibrated path here
         wav = (x * 32768.0) if int16_scale else x
     else:
