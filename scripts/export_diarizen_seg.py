@@ -25,11 +25,18 @@ if not tok and (ROOT / ".hf_token").exists():
 
 from diarizen.models.eend.model_wavlm_conformer import Model  # noqa: E402
 
-OUT = ROOT / "models" / "seg.onnx"
 CHUNK = 16 * 16000  # 256000 samples
 
 def main() -> None:
-    hub = Path(snapshot_download("BUT-FIT/diarizen-wavlm-base-s80-md"))
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--repo", default="BUT-FIT/diarizen-wavlm-base-s80-md",
+                    help="HF checkpoint (e.g. BUT-FIT/diarizen-wavlm-large-s80-md)")
+    ap.add_argument("--out", default=str(ROOT / "models" / "seg.onnx"))
+    args = ap.parse_args()
+    OUT = Path(args.out)
+
+    hub = Path(snapshot_download(args.repo))
     margs = toml.load(hub / "config.toml")["model"]["args"]
     model = Model(**margs).eval()
     sd = torch.load(hub / "pytorch_model.bin", map_location="cpu", weights_only=True)
@@ -66,7 +73,8 @@ def main() -> None:
     print("torch out:", y_torch.shape, "onnx out:", y_onnx.shape)
     max_abs = float(np.max(np.abs(y_torch - y_onnx)))
     print(f"parity max|torch - onnx| = {max_abs:.6e}")
-    print("PASS" if max_abs < 1e-3 and y_onnx.shape == (2, 799, 11) else "CHECK PARITY")
+    print("PASS" if max_abs < 1e-3 and y_onnx.shape[0] == 2 and y_onnx.shape[2] == 11
+          else "CHECK PARITY")
 
 
 if __name__ == "__main__":

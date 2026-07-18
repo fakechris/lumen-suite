@@ -181,6 +181,7 @@ def diarize_v2(
         threshold_bias=ahc_threshold_bias,
         max_speakers=max_speakers,
         min_cluster_size=1,  # size handled by duration below
+        allow_single=True,   # a memo/dictation really can be one speaker
     )
     labels = _absorb_by_duration(
         x128, labels, np.array([ls.active_sec for ls in locals_]), MIN_CLUSTER_SEC

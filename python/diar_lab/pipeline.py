@@ -261,12 +261,16 @@ def ahc_labels(
     threshold_bias: float = AHC_THRESHOLD_BIAS,
     max_speakers: int = 6,
     min_cluster_size: int = 8,
+    allow_single: bool = False,
 ) -> np.ndarray:
     """AHC on cosine similarity.
 
     Primary path: 2-GMM calibrated threshold (BUT). If that over-splits
     beyond max_speakers, fall back to best k in [2, max_speakers] by
     silhouette, then absorb tiny clusters into nearest large centroid.
+
+    allow_single: accept a 1-cluster result (single-speaker audio) instead
+    of forcing k>=2 via the silhouette fallback.
     """
     import fastcluster
     from sklearn.metrics import silhouette_score
@@ -291,6 +295,9 @@ def ahc_labels(
     cut = max(1e-6, 1.0 - thr)
     labels = fcluster(lin, cut, criterion="distance") - 1
     k = int(labels.max()) + 1
+
+    if k < 2 and allow_single:
+        return labels.astype(np.int32)
 
     # If over-split, pick k by silhouette on cosine
     if k > max_speakers or k < 2:
