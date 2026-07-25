@@ -1,0 +1,33 @@
+[package]
+name = "lumen-asr-engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared ASR engine layer for Lumen products (SenseVoice/Whisper via sherpa-onnx, Qwen3-ASR MLX worker, OpenAI-compatible HTTP)"
+repository = "https://github.com/fakechris/lumen-suite"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt", "process", "io-util", "time", "sync"] }
+tracing = "0.1"
+
+# Offline SenseVoice / Whisper via official bindings
+# (downloads a prebuilt static lib on first build).
+sherpa-onnx = { version = "1.13.4", optional = true }
+
+# OpenAI-compatible HTTP transcription.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = ["sherpa"]
+sherpa = ["dep:sherpa-onnx"]
+cloud = ["dep:reqwest"]

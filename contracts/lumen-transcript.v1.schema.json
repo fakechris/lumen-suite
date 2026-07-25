@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lumen.local/contracts/lumen-transcript.v1.schema.json",
+  "title": "Lumen Transcript Interchange v1",
+  "description": "Unified transcript interchange format for the Lumen product suite (lumen-navi, lumen-asr, diar-rs producers; lumen-cut consumer). Media is referenced, never embedded. All times are seconds from the start of the referenced media, as floating point numbers. Unknown fields MUST be preserved by consumers that re-emit the document (additive evolution); consumers that only import MAY ignore them.",
+  "type": "object",
+  "required": ["schema", "segments"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "const": "lumen-transcript.v1",
+      "description": "Format discriminator. Consumers MUST reject documents whose schema is not exactly this value (a future v2 gets its own file)."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "media": {
+      "$ref": "#/$defs/media"
+    },
+    "speakers": {
+      "type": "array",
+      "description": "Speaker table. Every segment.speaker SHOULD reference an entry here by id, but consumers MUST tolerate dangling references (treat as an anonymous speaker with that id).",
+      "items": { "$ref": "#/$defs/speaker" }
+    },
+    "segments": {
+      "type": "array",
+      "description": "Time-ordered transcript units, roughly sentence/cue granularity. Producers SHOULD emit segments sorted by start; consumers MUST sort defensively.",
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "description": "Where this transcript came from. Purely informational; never used for dispatch beyond display and debugging.",
+      "required": ["app"],
+      "additionalProperties": true,
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "Producing application, e.g. \"lumen-navi\", \"lumen-asr\", \"lumen-cut\", \"diar-rs\".",
+          "examples": ["lumen-navi", "lumen-asr", "lumen-cut", "diar-rs"]
+        },
+        "app_version": {
+          "type": "string",
+          "description": "Producing application version, e.g. \"0.4.2\"."
+        },
+        "engine": {
+          "type": "string",
+          "description": "ASR/diarization engine identifier, e.g. \"speech\", \"sensevoice_sherpa\", \"whisper\", \"qwen3_asr\", \"pyannote\", \"diar-rs/open\"."
+        },
+        "model": {
+          "type": "string",
+          "description": "Stable model name without local filesystem paths, e.g. \"qwen3-asr-4bit\", \"pyannote/speaker-diarization-3.1\"."
+        },
+        "model_revision": {
+          "type": "string",
+          "description": "Immutable model revision/commit when the runtime exposes one."
+        },
+        "language": {
+          "type": "string",
+          "description": "Primary language of the transcript as a BCP-47 tag, e.g. \"zh\", \"zh-CN\", \"en\". Per-segment language may override.",
+          "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 timestamp of when this transcript document was produced."
+        },
+        "extra": {
+          "type": "object",
+          "description": "Free-form engine diagnostics (e.g. lumen-asr QwenRuntimeMetrics). Opaque to consumers.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "media": {
+      "type": "object",
+      "description": "Reference to the source media. The media itself is NEVER embedded. path may be absent when the producer stores audio in a content-addressed store (lumen-navi); content_hash then serves as the durable link.",
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute path (or producer-relative path) to the source audio/video file, when one exists on disk."
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total media duration in seconds."
+        },
+        "sample_rate": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Audio sample rate in Hz, e.g. 16000."
+        },
+        "channels": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Audio channel count."
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Size of the referenced media in bytes."
+        },
+        "content_hash": {
+          "type": "string",
+          "description": "Content hash of the referenced media, prefixed with the algorithm, e.g. \"blake3:9f8a…\". Lets consumers verify they are importing against the same audio without a stable path.",
+          "pattern": "^[a-z0-9_-]+:[0-9a-fA-F]+$"
+        }
+      }
+    },
+    "speaker": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable speaker id within this document, e.g. \"S1\", \"SPEAKER_00\". Referenced by segment.speaker."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-assigned name, e.g. \"Alice\". Absent until a user labels the speaker."
+        },
+        "voiceprint": {
+          "type": "object",
+          "description": "RESERVED (v1: producers MUST NOT emit, consumers MUST ignore). Future slot for a portable speaker embedding reference.",
+          "additionalProperties": true
+        },
+        "enrollment": {
+          "type": "object",
+          "description": "RESERVED (v1: producers MUST NOT emit, consumers MUST ignore). Future slot for cross-recording speaker enrollment metadata.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "required": ["start", "end", "text"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Optional stable segment id assigned by the producer. Consumers generate their own ids when absent."
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Segment start, seconds from media start. Producers without native timing MUST synthesize this (see TRANSCRIPT.md)."
+        },
+        "end": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Segment end, seconds from media start. MUST be >= start (not expressible in JSON Schema; consumers clamp)."
+        },
+        "text": {
+          "type": "string",
+          "description": "Transcript text for this segment. May be empty for speaker-only (diarization) segments."
+        },
+        "speaker": {
+          "type": "string",
+          "description": "Speaker id, referencing speakers[].id. Absent when unknown/unassigned."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Engine confidence in [0,1]. Semantics are engine-specific; comparable only within one engine."
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+          "description": "Per-segment language override (code-switching)."
+        },
+        "words": {
+          "type": "array",
+          "description": "Optional word-level timing. When present, words SHOULD tile the segment in order.",
+          "items": { "$ref": "#/$defs/word" }
+        },
+        "translations": {
+          "type": "object",
+          "description": "Optional translations of this segment's text, keyed by BCP-47 language tag.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "word": {
+      "type": "object",
+      "required": ["word", "start", "end"],
+      "additionalProperties": true,
+      "properties": {
+        "word": {
+          "type": "string",
+          "description": "Word surface form (for CJK engines this may be a single character or engine token)."
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Word start, seconds from media start."
+        },
+        "end": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Word end, seconds from media start. MUST be >= start."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Optional per-word confidence in [0,1]."
+        }
+      }
+    }
+  }
+}
