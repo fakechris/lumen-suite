@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r python/requirements.txt
+      - name: Compile lab
+        run: |
+          export PYTHONPATH=python
+          python -m py_compile python/diar_lab/*.py
+      - name: Eval harness synthetic test (RTTM + multi-file; no models needed)
+        run: |
+          export PYTHONPATH=python
+          python - <<'PY'
+          import sys, json, tempfile
+          sys.path.insert(0, "python")
+          from diar_lab.compare_benchmark import run_multi
+          d = tempfile.mkdtemp()
+          for rec, spks in [("f1", [("S1", 0.0, 1.0), ("S2", 1.0, 2.0)]),
+                            ("f2", [("S1", 0.0, 1.5)])]:
+              open(f"{d}/{rec}.rttm", "w").write(
+                  "".join(f"SPEAKER {rec} 1 {s} {e-s:.3f} <NA> <NA> {sid} <NA> <NA>\n"
+                          for sid, s, e in spks))
+              import os; os.makedirs(f"{d}/hyp/{rec}", exist_ok=True)
+              json.dump({"method": "t", "timeline": [
+                  {"start": s, "end": e, "speaker": i} for i, (_, s, e) in enumerate(spks)]},
+                  open(f"{d}/hyp/{rec}/diarization.json", "w"))
+          run_multi(d, f"{d}/hyp", "rttm", f"{d}/out")
+          print("eval harness OK")
+          PY
+
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install kaldi-native-fbank (for build.rs FFI)
+        run: pip install kaldi-native-fbank
+      - name: Cargo test
+        working-directory: crates/diar-rs
+        env:
+          PYTHON: ${{ env.pythonLocation }}/bin/python
+        run: |
+          lib="$($PYTHON -c 'import kaldi_native_fbank as k,pathlib;print(pathlib.Path(k.__file__).parent/"lib")')"
+          inc="$($PYTHON -c 'import kaldi_native_fbank as k,pathlib;print(pathlib.Path(k.__file__).parent/"include")')"
+          echo "KNF_LIB_DIR=$lib"
+          if [ "${{ runner.os }}" = "macOS" ]; then export DYLD_LIBRARY_PATH="$lib"; else export LD_LIBRARY_PATH="$lib"; fi
+          KNF_LIB_DIR="$lib" KNF_INCLUDE_DIR="$inc" cargo test --release --lib

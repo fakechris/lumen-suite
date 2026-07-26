@@ -1,0 +1,23 @@
+diff --git a/diarizen/models/module/wav2vec2/model.py b/diarizen/models/module/wav2vec2/model.py
+index 9861085..79c5573 100644
+--- a/diarizen/models/module/wav2vec2/model.py
++++ b/diarizen/models/module/wav2vec2/model.py
+@@ -110,7 +110,10 @@ class Wav2Vec2Model(Module):
+                 ]
+                 waveforms = torch.nn.utils.rnn.pad_sequence(waveforms, batch_first=True)
+             else:
+-                waveforms = F.layer_norm(waveforms, waveforms.shape[-1:])
++                mean = waveforms.mean(dim=-1, keepdim=True)
++                centered = waveforms - mean
++                variance = centered.square().mean(dim=-1, keepdim=True)
++                waveforms = centered * torch.rsqrt(variance + 1e-5)
+ 
+         x, lengths = self.feature_extractor(waveforms, lengths)
+         if self.feature_grad_mult != 1.0:
+@@ -1014,4 +1017,4 @@ def wavlm_large(
+         encoder_layer_norm_first=True,
+         encoder_layer_drop=encoder_layer_drop,
+         aux_num_out=aux_num_out,
+-    )
+\ No newline at end of file
++    )
