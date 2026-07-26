@@ -15,6 +15,10 @@ contracts/
 crates/
   lumen-models                     模型下载/路径解析/安装锁（统一 asr/navi/cut 三份实现）
   lumen-asr-engine                 ASR 引擎层（sherpa-onnx SenseVoice/Whisper + MLX Qwen + cloud）
+diar/                              说话人分离引擎（自 diar-rs 仓库整体并入，历史保留）
+  crates/diar-rs                   Rust/ONNX diarization crate（workspace 成员，非默认构建：
+                                   build.rs 需 Python 端 kaldi-native-fbank，用 -p diar-rs 构建）
+  python/、scripts/、docs/          研究 lab（质量基准、模型导出，超前于 Rust 实现）
 docs/
   PRODUCT_MATRIX.md                产品矩阵与仓库布局决策
   ADR-0001-diarization.md          说话人分离技术收敛决策

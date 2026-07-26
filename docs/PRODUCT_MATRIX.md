@@ -31,24 +31,25 @@
 - 会议纪要：lumen-prompts 新增 minutes intent（摘要/行动项/决议），走既有 corrector LLM 层
 - 会议库 UI：录音列表、说话人重命名、导出 `lumen-transcript.v1` → Cut 导入
 
-## 仓库布局（确认版）
+## 仓库布局（确认版，2026-07-26 修订：diar-rs 并入 suite）
 
 ```
-lumen-suite        平台仓库：contracts/（provider 目录、transcript schema、models 契约）
-                   + crates/（lumen-models、lumen-asr-engine，宽松许可 MIT）
+lumen-suite        平台仓库：contracts/ + crates/（lumen-models、lumen-asr-engine）
+                   + diar/（diarization 引擎与研究 lab，自 diar-rs 整体并入，历史保留）
 lumen-asr          产品：Lumen Voice（听写 + 会议）
 lumen-cut          产品：编辑器（AGPL，消费 suite 的 MIT crate 无问题）
 lumen-translation  产品：语言层（TS monorepo，消费 contracts/ 的 JSON 数据）
 lumen-navi         产品：持续上下文（继续导出 lumen-context 供 asr 消费）
-diar-rs            独立引擎库：保持独立仓库，不合并（理由见下）
 ```
 
-### diar-rs 为什么不合并进其他仓库
+最终形态：**1 个平台仓库 + 4 个产品仓库**。
 
-- 它是可嵌入引擎（rlib + cdylib + staticlib + C FFI），有独立的发布节奏和潜在开源社区价值；
-- 许可证隔离：MIT 引擎不应并进 AGPL 的 cut；并进 asr 会把 kaldi-native-fbank C++ 依赖和 Python lab 拖进产品仓库；
-- 消费方式与其他共享 crate 一致：git dependency。
-- 命名可后续演进为 `lumen-diar`，非必需。
+### diar-rs 并入 suite 的理由与边界
+
+- diar-rs 本就是被嵌入的能力层而非产品，与 lumen-models/lumen-asr-engine 同类，归属 suite 语义最顺；产品统一以 git dependency 指向 suite 一个仓库，减少一条依赖线。
+- 许可证不冲突：diar-rs（MIT）与 suite（MIT）一致；AGPL 的 cut 消费无碍。
+- **边界**：diar 的 crate 不在 workspace 默认构建集里（build.rs 依赖 Python 端 kaldi-native-fbank，见 ADR-0001 阻塞项 2；vendored 编译后可回归默认集）。研究 lab（python/、runs 基准）保留在 `diar/` 子树内，目录结构未动，脚本相对路径全部有效。
+- 原 `~/source/diar-rs` 仓库可归档；其未跟踪的 models/、runs/、.venv、.hf_token 留在原地（模型权重按 fetch 脚本可重建）。
 
 ### 命名注意
 

@@ -1,5 +1,7 @@
 # diar-rs
 
+> Part of [lumen-suite](../README.md) since 2026-07-26 (merged from the standalone `diar-rs` repo with full history). The crate is a workspace member but **not** in the default build set — `build.rs` needs a Python env providing `kaldi-native-fbank`; build with `PYTHON=<venv>/bin/python3 cargo test -p diar-rs`.
+
 Open-source **speaker diarization** toolkit: **Rust library** for shipping + **Python lab** for experimentation. Runs on fully open weights and is measured against **human-annotated meeting ground truth (GT)** — not against any closed binary.
 
 | Layer | Path | Role |

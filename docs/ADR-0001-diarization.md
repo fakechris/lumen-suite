@@ -7,13 +7,13 @@
 产品簇内存在两套互不相通的 diarization 实现：
 
 1. **lumen-cut**：pyannote.audio 3.4.0 Python sidecar（`pyannote/speaker-diarization-3.1`，torch 2.5.1，MPS/CPU），已在产品内跑通，含说话人→段落分配（`diarize/assign.rs`）与 UI。
-2. **diar-rs**：纯 Rust/ONNX（ort）管线——DiariZen WavLM 分割 + WeSpeaker ResNet34 embedding + PLDA + AHC 聚类，lib + CLI + C FFI，无 torch 依赖。当前无任何消费方。
+2. **diar-rs**（2026-07-26 起并入本仓库 `diar/crates/diar-rs`）：纯 Rust/ONNX（ort）管线——DiariZen WavLM 分割 + WeSpeaker ResNet34 embedding + PLDA + AHC 聚类，lib + CLI + C FFI，无 torch 依赖。当前无任何消费方。
 
 ## 决策
 
 **短期（现在）**：lumen-cut 继续使用 pyannote sidecar，不动。它能跑、有质量保底，替换没有产品收益。
 
-**战略（会议模式上线路径）**：投资 diar-rs 作为簇内统一 diarization 引擎，lumen-asr 会议模式作为其第一个消费方（通过 git dependency 以 Rust crate 方式接入，不走 C FFI）。理由：无 Python/torch 运行时依赖、启动快、体积小、适合常驻菜单栏 app；cut 的 pyannote sidecar 依赖 ~2GB torch 运行时，不适合 Voice 产品形态。
+**战略（会议模式上线路径）**：投资 diar-rs 作为簇内统一 diarization 引擎，lumen-asr 会议模式作为其第一个消费方（与 lumen-models/lumen-asr-engine 一样，通过对 lumen-suite 的 git dependency 以 Rust crate 方式接入，不走 C FFI）。理由：无 Python/torch 运行时依赖、启动快、体积小、适合常驻菜单栏 app；cut 的 pyannote sidecar 依赖 ~2GB torch 运行时，不适合 Voice 产品形态。
 
 **收敛条件**（满足后 cut 再迁移到 diar-rs，此前不迁）：
 - diar-rs 在会议真值集上 frame_acc/DER 不劣于 pyannote 3.1
