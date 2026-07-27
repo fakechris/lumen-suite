@@ -3,16 +3,16 @@
 ## Stage 1: 契约与共享 crate 落地（本仓库内，不动产品仓库）
 **Goal**: contracts/（provider 目录、transcript schema、models 契约）+ crates/lumen-models + crates/lumen-asr-engine，全部编译、测试通过
 **Success Criteria**: `cargo test` 全绿；JSON 契约通过 schema 校验；每个 crate 附迁移对照表
-**Status**: In Progress
+**Status**: Complete（2026-07-26；diar-rs 亦已 subtree 并入 `diar/`）
 
 ## Stage 2: 建远程仓库，消费方切换 git dependency
-**Goal**: lumen-suite 推送到 github.com/fakechris/lumen-suite（建议 private 起步）；lumen-asr 首先迁移到 `lumen-models` + `lumen-asr-engine`（git dep），删除本仓库内重复实现
-**Success Criteria**: lumen-asr CI 绿；行为无回归（paths 契约测试沿用）
-**Status**: Not Started（等待用户创建 remote 并 push）
+**Goal**: lumen-suite 推送到 github.com/fakechris/lumen-suite（已转 public）；lumen-asr 与 lumen-navi 迁移到 `lumen-models` + `lumen-asr-engine`（git dep），删除仓库内重复实现
+**Success Criteria**: CI 绿；行为无回归（paths 契约测试沿用）
+**Status**: Complete（navi 已合入 main；asr 走 PR #28，净删 ~5000 行重复代码）
 
-## Stage 3: lumen-navi、lumen-cut 跟进迁移
-**Goal**: navi 的 lumen-asr-engine 内部 crate 替换为共享版；cut 的模型 runtime 接入 `Lumen/models/` 共享目录与 lumen-models
-**Success Criteria**: 三个产品共享同一份模型磁盘存储（Qwen3-ASR 不再重复占盘）
+## Stage 3: lumen-cut 跟进迁移
+**Goal**: cut 的模型 runtime 接入 `Lumen/models/` 共享目录与 lumen-models；translation 消费 provider-catalog.v1.json
+**Success Criteria**: 三个产品共享同一份模型磁盘存储；provider 目录单一事实源
 **Status**: Not Started
 
 ## Stage 4: transcript 交换落地
