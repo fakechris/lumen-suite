@@ -8,10 +8,10 @@
 //! Behavior is governed by the cluster contract in
 //! `contracts/SHARED_MODELS_CONTRACT.md` (canonical here since v1.1;
 //! previously in `lumen-asr/docs/`). The contract-hash test below pins the
-//! contract body byte-for-byte to cluster v1.
+//! contract body byte-for-byte to cluster v1.1.
 //!
-//! Feature `download` (default on, zero extra dependencies — uses system
-//! `curl` + `tar`) gates the SenseVoice package installer.
+//! Feature `download` (default on) gates the in-process SenseVoice package
+//! installer.
 
 mod install_lock;
 mod paths;
@@ -97,12 +97,12 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    /// The cluster contract body must stay byte-identical to v1
+    /// The cluster contract body must stay byte-identical to v1.1
     /// (`lumen-asr` / `lumen-navi` pin the same hash over their doc copies).
     /// The lumen-suite copy prepends one provenance line before the first
     /// heading; everything from `# ` onward is the unmodified contract.
     #[test]
-    fn shared_model_contract_matches_cluster_v1() {
+    fn shared_model_contract_matches_cluster_v1_1() {
         let bytes = include_bytes!("../../../contracts/SHARED_MODELS_CONTRACT.md");
         let body_start = bytes
             .windows(2)
@@ -112,7 +112,11 @@ mod tests {
             body_start > 0,
             "provenance note missing above the contract body"
         );
-        assert_eq!(fnv1a64(&bytes[body_start..]), 0xc877_89f4_de20_5e71);
+        let normalized = bytes[body_start..]
+            .split(|byte| *byte == b'\r')
+            .flat_map(|segment| segment.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(fnv1a64(&normalized), 0x9481_7905_7ee6_d582);
     }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {

@@ -4,6 +4,7 @@
 //! discover models under one place so users do not re-download per product:
 //!
 //! - macOS: `~/Library/Application Support/Lumen/models/`
+//! - Windows: `%LOCALAPPDATA%/Lumen/models/`
 //! - other: `~/.lumen/models/`
 //! - override: env [`ENV_LUMEN_MODELS_DIR`] or an explicit
 //!   `models_root` argument (e.g. Navi's `asr.models_root` config).
@@ -75,8 +76,8 @@ fn nonempty_env_path(key: &str) -> Option<PathBuf> {
 /// Shared models root for the Lumen app cluster.
 ///
 /// Priority: `LUMEN_MODELS_DIR` → platform default
-/// (`~/Library/Application Support/Lumen/models` on macOS, `~/.lumen/models`
-/// elsewhere).
+/// (`~/Library/Application Support/Lumen/models` on macOS,
+/// `%LOCALAPPDATA%/Lumen/models` on Windows, `~/.lumen/models` elsewhere).
 pub fn lumen_models_dir() -> PathBuf {
     lumen_models_dir_with_override(None)
 }
@@ -96,7 +97,13 @@ pub fn lumen_models_dir_with_override(override_root: Option<&Path>) -> PathBuf {
     {
         home.join("Library/Application Support/Lumen/models")
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        nonempty_env_path("LOCALAPPDATA")
+            .unwrap_or_else(|| home.join("AppData/Local"))
+            .join("Lumen/models")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         home.join(".lumen/models")
     }
@@ -126,6 +133,7 @@ pub fn legacy_model_roots(home: &Path) -> Vec<PathBuf> {
         home.join("Library/Application Support/LumenNavi/models"),
         home.join(".lumen-asr/models"),
         home.join(".lumen-navi/models"),
+        home.join(".lumen/models"),
     ]
 }
 
@@ -534,8 +542,20 @@ mod tests {
                 home.join("Library/Application Support/LumenNavi/models"),
                 home.join(".lumen-asr/models"),
                 home.join(".lumen-navi/models"),
+                home.join(".lumen/models"),
             ]
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_default_uses_local_app_data() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let local = temp_dir("local-app-data");
+        let _models = EnvGuard::unset(ENV_LUMEN_MODELS_DIR);
+        let _local = EnvGuard::set("LOCALAPPDATA", local.as_os_str());
+
+        assert_eq!(lumen_models_dir(), local.join("Lumen/models"));
     }
 
     #[test]
