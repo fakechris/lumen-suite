@@ -25,18 +25,28 @@ impl ModelInstallLock {
     /// download.
     pub fn try_acquire(models_root: &Path) -> io::Result<Option<Self>> {
         std::fs::create_dir_all(models_root)?;
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(models_root.join(SENSEVOICE_INSTALL_LOCK_NAME))?;
+            .open(models_root.join(SENSEVOICE_INSTALL_LOCK_NAME))
+        {
+            Ok(file) => file,
+            Err(error) if is_lock_contended(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(Self { file })),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if is_lock_contended(&error) => Ok(None),
             Err(error) => Err(error),
         }
     }
+}
+
+fn is_lock_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        || (cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
 }
 
 impl Drop for ModelInstallLock {

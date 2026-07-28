@@ -1,14 +1,15 @@
 //! Download + install the SenseVoice sherpa package (onboarding).
 //!
-//! Uses system `curl` + `tar` (macOS-friendly, zero extra Rust dependencies)
-//! and follows the cross-process install protocol from contract §6:
+//! Uses an in-process HTTP client and bzip2/tar decoder and follows the
+//! cross-process install protocol from contract §6:
 //! exclusive file lock → re-check → pid-unique scratch paths → validate →
 //! atomic publish → cleanup before releasing the lock.
 
 use crate::install_lock::ModelInstallLock;
 use crate::paths::sensevoice_ready;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -108,62 +109,53 @@ pub fn download_sensevoice_package(
         None,
     ));
 
-    let archive_str = archive_path
-        .to_str()
-        .ok_or_else(|| DownloadError::Failed("bad archive path".into()))?;
-    let mut child = Command::new("curl")
-        .args([
-            "-fL",
-            "--progress-bar",
-            "-o",
-            archive_str,
-            SENSEVOICE_ARCHIVE_URL,
-        ])
-        .spawn()
-        .map_err(|error| DownloadError::Failed(format!("curl failed to start: {error}")))?;
-    let status = loop {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Lumen-ASR/model-installer")
+        .build()
+        .map_err(|error| DownloadError::Failed(format!("create HTTP client: {error}")))?;
+    let mut response = client
+        .get(SENSEVOICE_ARCHIVE_URL)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| DownloadError::Failed(format!("download SenseVoice: {error}")))?;
+    let total = response.content_length();
+    let mut output = File::create(&archive_path)?;
+    let mut bytes = 0u64;
+    let mut buffer = vec![0u8; 128 * 1024];
+    loop {
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(DownloadError::Cancelled);
         }
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => thread::sleep(Duration::from_millis(100)),
+        let read = response
+            .read(&mut buffer)
+            .map_err(|error| DownloadError::Failed(format!("read model download: {error}")))?;
+        if read == 0 {
+            break;
         }
-    };
-    if !status.success() {
-        return Err(DownloadError::Failed(format!(
-            "download failed (curl exit {:?}). Check network or place model under {}",
-            status.code(),
-            final_dir.display()
-        )));
+        output.write_all(&buffer[..read])?;
+        bytes += read as u64;
+        on_progress(progress(
+            "downloading",
+            "Downloading SenseVoice model…",
+            bytes,
+            total,
+        ));
     }
-
-    let bytes = std::fs::metadata(&archive_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
+    output.flush()?;
     on_progress(progress(
         "extracting",
         "Extracting archive…",
         bytes,
-        Some(bytes),
+        total.or(Some(bytes)),
     ));
 
     std::fs::create_dir_all(&extract_tmp)?;
-
-    let extract_str = extract_tmp
-        .to_str()
-        .ok_or_else(|| DownloadError::Failed("bad extract path".into()))?;
-    let tar_status = Command::new("tar")
-        .args(["-xjf", archive_str, "-C", extract_str])
-        .status()
-        .map_err(|error| DownloadError::Failed(format!("tar failed: {error}")))?;
-    if !tar_status.success() {
-        return Err(DownloadError::Failed(
-            "failed to extract model archive".into(),
-        ));
-    }
+    let archive_file = File::open(&archive_path)?;
+    let decoder = bzip2::read::BzDecoder::new(archive_file);
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .unpack(&extract_tmp)
+        .map_err(|error| DownloadError::Failed(format!("extract SenseVoice archive: {error}")))?;
 
     let found = find_sensevoice_dir(&extract_tmp).ok_or_else(|| {
         DownloadError::Failed(

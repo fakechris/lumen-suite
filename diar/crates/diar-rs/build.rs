@@ -12,7 +12,10 @@ fn main() {
     let (lib_dir, include_dir) = knf_paths();
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=kaldi-native-fbank-core");
-    // macOS: allow finding dylib at runtime next to python package
+    // Unix loaders can find the Python package's shared library in place.
+    // MSVC does not understand `-Wl,-rpath`; Windows packaging must place the
+    // corresponding DLL next to the final executable instead.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 
     cc::Build::new()
@@ -23,7 +26,11 @@ fn main() {
         .include(&include_dir)
         .compile("knf_c_api");
 
-    println!("cargo:warning=knf lib={} include={}", lib_dir.display(), include_dir.display());
+    println!(
+        "cargo:warning=knf lib={} include={}",
+        lib_dir.display(),
+        include_dir.display()
+    );
 }
 
 fn knf_paths() -> (PathBuf, PathBuf) {

@@ -1,0 +1,47 @@
+name: Windows CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - port/windows
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  shared-crates:
+    name: Shared crates (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Test model management
+        run: cargo test -p lumen-models
+
+      - name: Test ASR engine without native inference
+        run: cargo test -p lumen-asr-engine --no-default-features
+
+      - name: Check ASR engine with sherpa-onnx
+        run: cargo check -p lumen-asr-engine
+
+      - name: Lint default workspace members
+        run: cargo clippy --all-targets

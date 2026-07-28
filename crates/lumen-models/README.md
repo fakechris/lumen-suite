@@ -8,7 +8,8 @@ Lumen 产品簇的共享模型层：ASR 模型的**路径解析**、**就绪校�
 
 ## Features
 
-- `download`（默认开启）：SenseVoice 包下载安装（系统 `curl` + `tar`，无额外 Rust 依赖）。关闭后仅保留路径/锁逻辑，依赖只有 `fs2` / `serde` / `serde_json` / `thiserror`。
+- `download`（默认开启）：SenseVoice 包下载安装（Rust HTTP streaming +
+  bzip2/tar 解压，不依赖系统命令）。关闭后仅保留路径/锁逻辑。
 
 ## 迁移映射
 
