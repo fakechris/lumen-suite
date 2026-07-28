@@ -35,6 +35,7 @@
 **Status**：Not Started
 
 ### Stage M2：diar-rs 可嵌入 + 离线转录管线
+**M2a 状态**: Complete（2026-07-28，suite 92cf565）—— diar-rs vendored fbank，env -u PYTHON cargo build 通过。M2b（asr 离线管线）Not Started。
 **Goal**：(a) 让 diar-rs 可作为 Rust 依赖被 asr 干净构建——vendored kaldi-native-fbank C++ 源码编译，去掉 build.rs 的 Python 定位（ADR-0001 阻塞项 2）；(b) 给定一个**预录 wav 文件**，跑通 diar-rs 分段+说话人 → 每轮次 AsrEngine 转录 → 拼成多 segment lumen-transcript.v1 → 存 v6。先不接 live 采集，用测试音频。
 **Success**：`cargo test`；asr 能 `cargo build`（无需 PYTHON env）；离线跑通样例会议 wav，产出带说话人的多段转录并入库。
 **归属**：suite/diar-rs（vendored fbank）+ lumen-asr（管线接入）

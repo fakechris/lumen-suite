@@ -22,7 +22,7 @@
 ## diar-rs 的阻塞项（按优先级）
 
 1. **许可证**：分割模型 DiariZen WavLM-base 为 CC-BY-NC-4.0（禁商用）。商业化前必须替换——候选：pyannote/segmentation-3.0（MIT）导出 ONNX，或自训。embedding 模型 WeSpeaker 为 CC-BY-4.0，可商用，无需动。
-2. **构建可移植性**：`build.rs` 通过导入 Python 包 `kaldi_native_fbank` 定位原生库——共享 crate 不可接受。改为 vendored 源码编译（cc crate 直接编 kaldi-native-fbank 的 C++ 源）或纯 Rust fbank 实现。
+2. ~~**构建可移植性**：`build.rs` 通过导入 Python 包 `kaldi_native_fbank` 定位原生库~~ —— **已解决（2026-07-28，会议 M2a，suite 92cf565）**：kaldi-native-fbank(Apache-2.0)+kissfft(BSD-3)已 vendored 进 `diar/crates/diar-rs/native/knf/` 静态编译，去掉 Python 定位与 Unix-only rpath；`env -u PYTHON cargo build -p diar-rs` 通过，6 测试绿。只编 fbank 链。
 3. **说话人注册（enrollment/voiceprint）缺失**：会议场景需要跨会话身份（"这是 Chris"）。基于现有 WeSpeaker 256-d embedding 增加注册库（存 `~/Library/Application Support/Lumen/identity/`，写入契约），聚类后与注册 embedding 做余弦匹配。
 4. VBx 聚类修复（vbx.rs 已存在但未接入，AHC 为当前路径）——质量优化项，非阻塞。
 
