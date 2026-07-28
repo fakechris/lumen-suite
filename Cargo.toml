@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "diar/crates/diar-rs"]
 # diar-rs is excluded from default builds: its build.rs needs a Python env
 # providing kaldi-native-fbank (see diar/README.md). Build with -p diar-rs.
-default-members = ["crates/lumen-models", "crates/lumen-asr-engine", "crates/lumen-transcript"]
+default-members = ["crates/lumen-models", "crates/lumen-asr-engine", "crates/lumen-transcript", "crates/lumen-context"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,15 @@ repository = "https://github.com/fakechris/lumen-suite"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# Added for lumen-context (aligned with lumen-navi codex/context-capture-foundation).
+async-trait = "0.1"
+blake3 = "1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal", "net", "process", "io-util"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Moved here from diar/crates/diar-rs (profiles only apply at workspace root).
 [profile.release]
