@@ -28,7 +28,12 @@
   后续再拆 lumen-context-macos / lumen-context-windows。消除 asr 对 navi 仓库（UNLICENSED）的耦合，
   解决 Windows 编译与 SignPath 开源审查问题。
 **Success Criteria**: asr 与 navi 均不再跨依赖对方仓库；两者共同依赖 lumen-suite
-**Status**: 调研中
+**Status**: Complete（2026-07-28）。lumen-context 经 git subtree 带历史迁入 `crates/lumen-context`（suite rev c33c13e，
+  workspace 成员，macOS 35 测试绿）。asr 改指向 suite（PR #33 已合并，四依赖统一 pin c33c13e，源码零改动，
+  Cargo.toml/lock 内 lumen-navi 零命中，macOS 全量 CI 绿）——asr→navi 耦合根除。
+  navi 侧：codex/context-capture-foundation 分支删除仓库内副本、改指向 suite（PR #6，base 为该特性分支，
+  6 个消费者 crate 本地 cargo check 全绿；该分支无 CI，靠本地验证）——待该分支自行落地时合入。
+  后续可选：拆 lumen-context-macos / lumen-context-windows（缝已在 operational.rs 的平台 trait 预留）。
 
 ## Stage 5: 会议模式（lumen-asr）
 **Goal**: 系统音频采集 + diar-rs 接入 + minutes prompts + 会议库 UI（见 docs/PRODUCT_MATRIX.md 与 ADR-0001）
