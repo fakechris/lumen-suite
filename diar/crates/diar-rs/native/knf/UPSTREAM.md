@@ -11,9 +11,13 @@ omitted.
 - Commit: `b09e686fe2084732ddd30d1ef80acfc0f13eaf01` (Release v1.22.3)
 - License: Apache-2.0 (see `LICENSE-kaldi-native-fbank.Apache-2.0.txt`)
 - Vendored path: `kaldi-native-fbank/csrc/`
-- Contents: all non-test `*.cc` / `*.h` from upstream `kaldi-native-fbank/csrc/`.
-  Excluded: `test-*.cc` (gtest-dependent test files), `CMakeLists.txt`,
-  `CPPLINT.cfg`.
+- Contents: all non-test `*.h` from upstream `kaldi-native-fbank/csrc/`, plus
+  only the `*.cc` of the fbank feature chain (feature-fbank, feature-functions,
+  feature-window, kaldi-math, log, mel-computations, online-feature, rfft).
+  Excluded: `test-*.cc` (gtest-dependent), `CMakeLists.txt`, `CPPLINT.cfg`, and
+  the unused recognizer sources `feature-mfcc.cc`, `feature-raw-audio-samples.cc`,
+  `stft.cc`, `istft.cc`, `whisper-feature.cc` (their headers are kept because
+  `online-feature.h` includes them).
 
 ## kissfft
 
