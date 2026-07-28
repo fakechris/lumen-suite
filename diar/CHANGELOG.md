@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Build: vendored fbank, no Python / no external dylib
+`kaldi-native-fbank` (Apache-2.0) and `kissfft` (BSD-3-Clause) are now vendored
+under `native/knf/` and compiled statically by `build.rs`. This removes the
+former build-time dependency on a Python-located `kaldi-native-fbank-core`
+dylib and its Unix-only rpath link arg, so `cargo build` works on a clean
+machine with no Python and no preinstalled kaldi-native-fbank. Only the fbank
+feature chain is compiled (mfcc/whisper/stft recognizers are not). Resolves the
+"embeddable" blocker for consuming diar-rs as a plain git dependency
+(lumen-suite ADR-0001 blocker #2).
+
 ## [0.2.0] — 2026-07-18
 
 ### v2 pipeline (Python): local segmentation + speaker-masked embeddings
