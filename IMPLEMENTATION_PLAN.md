@@ -18,7 +18,17 @@
 ## Stage 4: transcript 交换落地
 **Goal**: navi/asr 导出 lumen-transcript.v1；cut 增加 "Import Lumen Transcript" 入口
 **Success Criteria**: navi 录制的会议在 cut 中打开无需重新 ASR
-**Status**: Not Started
+**Status**: Complete（2026-07-28）。suite 加 `lumen-transcript` crate（serde 类型+schema 校验，三方共享）。
+  navi 导出（已合入 main，含 ARCHITECTURE/AUDIO_PRODUCT/PLAN 文档修正）；asr 导出（PR #32，
+  导出文本优先级 pasted→corrected→asr_raw 以保住学习基线）；cut 导入（PR #21，CLI + Tauri）；
+  Swift PopClip 接 catalog（PR #8）——provider 目录四份副本全部归一。
+
+## Stage 4.5: lumen-context 迁移（asr→navi 解耦）
+**Goal**: 把 lumen-context crate 从 lumen-navi 迁到 lumen-suite（纯迁移，API 不变），asr 与 navi 都改依赖 suite；
+  后续再拆 lumen-context-macos / lumen-context-windows。消除 asr 对 navi 仓库（UNLICENSED）的耦合，
+  解决 Windows 编译与 SignPath 开源审查问题。
+**Success Criteria**: asr 与 navi 均不再跨依赖对方仓库；两者共同依赖 lumen-suite
+**Status**: 调研中
 
 ## Stage 5: 会议模式（lumen-asr）
 **Goal**: 系统音频采集 + diar-rs 接入 + minutes prompts + 会议库 UI（见 docs/PRODUCT_MATRIX.md 与 ADR-0001）
