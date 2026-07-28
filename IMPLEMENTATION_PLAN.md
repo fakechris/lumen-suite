@@ -13,7 +13,7 @@
 ## Stage 3: lumen-cut 跟进迁移
 **Goal**: cut 的模型 runtime 接入 `Lumen/models/` 共享目录与 lumen-models；translation 消费 provider-catalog.v1.json
 **Success Criteria**: 三个产品共享同一份模型磁盘存储；provider 目录单一事实源
-**Status**: Not Started
+**Status**: Complete（2026-07-27；cut PR #20：共享 Qwen snapshot 发现；translation PR #7：PROVIDER_CATALOG 从契约派生 + no_thinking 注入。剩余副本：Swift PopClip 的 Preferences.swift）
 
 ## Stage 4: transcript 交换落地
 **Goal**: navi/asr 导出 lumen-transcript.v1；cut 增加 "Import Lumen Transcript" 入口
