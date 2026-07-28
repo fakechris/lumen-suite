@@ -1,0 +1,17 @@
+[package]
+name = "lumen-transcript"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Serde types and validation for the lumen-transcript.v1 interchange format (contracts/lumen-transcript.v1.schema.json)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonschema = { version = "0.33", optional = true, default-features = false }
+
+[features]
+default = []
+# JSON Schema validation against the embedded canonical schema.
+validate = ["dep:jsonschema"]

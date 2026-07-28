@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "diar/crates/diar-rs"]
 # diar-rs is excluded from default builds: its build.rs needs a Python env
 # providing kaldi-native-fbank (see diar/README.md). Build with -p diar-rs.
-default-members = ["crates/lumen-models", "crates/lumen-asr-engine"]
+default-members = ["crates/lumen-models", "crates/lumen-asr-engine", "crates/lumen-transcript"]
 
 [workspace.package]
 version = "0.1.0"
