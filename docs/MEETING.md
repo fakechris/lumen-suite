@@ -32,10 +32,10 @@
 **Goal**：定义会议实体与数据模型，不含音频/diar/UI。存储 schema v6 加：`meetings`（或 sessions.kind）、`transcript_segments`(start/end/text/speaker_id/channel)、`speakers`(label 可改名, embedding ref)、`meeting_summaries`。新增会议会话类型（长录、多段、暂停/继续、无注入），与听写 Session 并列。
 **Success**：`cargo test` 全绿；schema v6 迁移测试；会议实体的增删查改单测。纯 Rust，无 UI。
 **归属**：lumen-asr（crates/lumen-store、lumen-core）
-**Status**：Not Started
+**Status**：Complete（2026-07-28，asr PR #38）
 
 ### Stage M2：diar-rs 可嵌入 + 离线转录管线
-**M2a 状态**: Complete（2026-07-28，suite 92cf565）—— diar-rs vendored fbank，env -u PYTHON cargo build 通过。M2b（asr 离线管线）Not Started。
+**状态**: Complete（2026-07-28）。M2a：diar-rs vendored fbank（suite 92cf565，env -u PYTHON cargo build 通过）。M2b：新建 crates/lumen-meeting（asr PR #39 合并），纯组装逻辑单测绿、diar-rs 双门控（cfg macos + diarize feature）、失败回滚。离线管线 wav→diar→逐段ASR→多段transcript→v6 入库就绪（真模型集成测试 #[ignore]）。
 **Goal**：(a) 让 diar-rs 可作为 Rust 依赖被 asr 干净构建——vendored kaldi-native-fbank C++ 源码编译，去掉 build.rs 的 Python 定位（ADR-0001 阻塞项 2）；(b) 给定一个**预录 wav 文件**，跑通 diar-rs 分段+说话人 → 每轮次 AsrEngine 转录 → 拼成多 segment lumen-transcript.v1 → 存 v6。先不接 live 采集，用测试音频。
 **Success**：`cargo test`；asr 能 `cargo build`（无需 PYTHON env）；离线跑通样例会议 wav，产出带说话人的多段转录并入库。
 **归属**：suite/diar-rs（vendored fbank）+ lumen-asr（管线接入）
