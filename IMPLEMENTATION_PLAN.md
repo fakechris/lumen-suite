@@ -35,7 +35,11 @@
   6 个消费者 crate 本地 cargo check 全绿；该分支无 CI，靠本地验证）——待该分支自行落地时合入。
   后续可选：拆 lumen-context-macos / lumen-context-windows（缝已在 operational.rs 的平台 trait 预留）。
 
-## Stage 5: 会议模式（lumen-asr）
-**Goal**: 系统音频采集 + diar-rs 接入 + minutes prompts + 会议库 UI（见 docs/PRODUCT_MATRIX.md 与 ADR-0001）
-**Success Criteria**: 端到端：开会 → 双流录音 → 分说话人转录 → 纪要 → 导出到 Cut
-**Status**: Not Started（前置：ADR-0001 阻塞项 1、2）
+## Stage 5: 会议模式（lumen-asr）— 详见 docs/MEETING.md
+**Goal**: diar-rs 接入 + minutes + 会议库 UI + 说话人注册。**决策（2026-07-28）**：macOS beta 先跑通
+  （diar-rs 含 CC-BY-NC 模型，仅非商用 beta）；**仅 macOS**；**v1 只采本机麦克风，不做系统音频/loopback**；
+  MVP 含核心链路 + 纪要 + 播放器 + 说话人注册。
+**Success Criteria**: 端到端：单 mic 连续录音 → diar 分说话人 → 分段转录 → 查看/改名 → 纪要 → 导出 Cut
+**子阶段**（见 docs/MEETING.md）：M1 数据骨架/存储v6 → M2 diar-rs 可嵌入+离线管线 → M3 连续录音 →
+  M4 会议库UI+播放器+纪要+导出 → M5 说话人注册
+**Status**: 计划就绪，待开工 M1
