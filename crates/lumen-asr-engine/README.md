@@ -1,9 +1,16 @@
 # lumen-asr-engine
 
 Shared ASR engine layer for Lumen products (lumen-asr, lumen-navi, future
-lumen-cut). One `AsrEngine` trait over local sherpa-onnx engines
-(SenseVoice / Whisper), the local Qwen3-ASR MLX Python worker (with shadow
-analysis), and OpenAI-compatible HTTP transcription.
+lumen-cut / lumen-meeting). One `AsrEngine` trait over local sherpa-onnx
+engines (SenseVoice / Whisper / **offline Paraformer**), the local Qwen3-ASR
+MLX Python worker (with shadow analysis), and OpenAI-compatible HTTP
+transcription — plus a separate `StreamingAsrEngine` trait for **real-time
+(streaming) Paraformer**.
+
+The Paraformer engines are the meeting workhorse (`docs/MEETING.md` Stage M6):
+offline Paraformer emits **word/token-level timestamps** (`AsrResult.words`)
+and supports **hotwords / contextual biasing**; streaming Paraformer drives
+live captions during recording.
 
 ## Design rules
 
@@ -23,7 +30,7 @@ analysis), and OpenAI-compatible HTTP transcription.
 
 | Feature | Default | Pulls in | Enables |
 |---------|---------|----------|---------|
-| `sherpa` | yes | `sherpa-onnx` 1.13.4 (downloads a prebuilt static lib on first build; needs network) | `SenseVoiceSherpaAsr` / `WhisperAsr` inference. Without it the types still exist but `transcribe` returns `AsrError::Unsupported` and `is_supported()` is false. |
+| `sherpa` | yes | `sherpa-onnx` 1.13.4 (downloads a prebuilt static lib on first build; needs network) | `SenseVoiceSherpaAsr` / `WhisperAsr` / `ParaformerAsr` / `StreamingParaformerAsr` inference. Without it the types still exist but `transcribe` returns `AsrError::Unsupported`, `StreamingParaformerAsr::new` errors, and `is_supported()` is false. |
 | `cloud` | no | `reqwest` (rustls) | `OpenAiAudioAsr` / `OpenAiAudioConfig`, and the `EngineKind::OpenAiAudio` branch of `build_engine`. |
 | — (always) | | `tokio` (process/io), `tempfile` | `QwenAsr` local MLX worker. The worker script `src/qwen_worker.py` is embedded via `include_str!` (`PRODUCT_WORKER`); actual inference additionally needs a local Python with `mlx` and a model snapshot at runtime. |
 
@@ -45,8 +52,65 @@ pub trait AsrEngine: Send + Sync {
 - `AsrResult { text, engine: AsrEngineId, engine_label, language, confidence, diagnostics }`
   — `engine_label` is navi's free-form transcript label, `diagnostics` is
   lumen-asr's `AsrRuntimeDiagnostics` (incl. Qwen metrics / shadow output).
-- `EngineKind` (config selector): `SenseVoice | Whisper | Qwen | Speech | OpenAiAudio`.
+- `EngineKind` (config selector): `SenseVoice | Whisper | Qwen | Paraformer | Speech | OpenAiAudio`.
 - Qwen shadow analysis is preserved: `QwenAsr::transcribe_with_shadow(req, Some(QwenShadowRequest { .. }))`.
+
+## Paraformer (offline + streaming)
+
+Both engines run through the existing `sherpa` feature (same 1.13.4 binding,
+no new dependency).
+
+### Offline — `ParaformerAsr` (word timestamps + hotwords)
+
+- `AsrEngine` impl (`EngineKind::Paraformer`, `AsrEngineId::Paraformer`, label
+  `paraformer`). Model layout: a single `model*.onnx` + `tokens.txt`
+  (convention `<models>/paraformer/offline/…`). Probe with
+  `paraformer_offline_ready(dir)` / `ParaformerOfflineModelPaths::discover`.
+- **Timestamps.** sherpa's offline Paraformer emits per-token `timestamps`
+  (and, when available, `durations`) natively — no flag needed. They are
+  mapped onto `AsrResult.words: Vec<WordTiming { word, start, end }>`
+  (`end` = `start + duration`, else the next token's start, else its own
+  start). Other engines leave `words` empty (skipped in JSON — payloads are
+  unchanged).
+- **Hotwords.** sherpa contextual biasing only takes effect under
+  `decoding_method = "modified_beam_search"`, so the recognizer is built with
+  that method (deliberate default for meetings; slightly slower than greedy).
+  Per-request `AsrRequest.hotwords` are injected via
+  `create_stream_with_hotwords` (one phrase per line). Tunables:
+  `ParaformerAsr::with_hotwords_score(f32)` (default `2.0`) and
+  `with_modeling_unit("cjkchar" | "bpe" | "cjkchar+bpe")` (default `cjkchar`).
+
+### Streaming — `StreamingParaformerAsr` (real-time)
+
+Streaming does not fit the "whole clip in → one result out" `AsrEngine`
+contract, so it implements a separate object-safe trait:
+
+```rust
+pub trait StreamingAsrEngine: Send {
+    fn accept_waveform(&mut self, samples: &[f32], sample_rate: u32);
+    fn decode(&mut self);
+    fn result(&self) -> StreamingResult;      // { text, is_final }
+    fn partial_text(&self) -> String;         // default: result().text
+    fn is_endpoint(&self) -> bool;
+    fn reset(&mut self);
+    fn input_finished(&mut self);
+}
+```
+
+`StreamingParaformerAsr::new(ParaformerStreamingModelPaths)` /
+`::from_dir(dir)` wraps sherpa's `OnlineRecognizer` (encoder + decoder +
+`tokens.txt`; convention `<models>/paraformer/streaming/…`, probe
+`paraformer_streaming_ready`). Endpointing is on by default
+(`StreamingEndpointConfig`, sherpa `rule*` knobs). Loop: feed a VAD segment →
+`accept_waveform` + `decode`, read `partial_text()` for the live caption, and
+on `is_endpoint()` snapshot then `reset()`.
+
+> **Open design points (subject to review):** (1) the streaming trait exposes
+> `result()`/`partial_text()` rather than the offline `words` timestamps —
+> streaming token timestamps are available from sherpa if the meeting layer
+> wants them. (2) Offline hotwords force `modified_beam_search`; if the
+> no-hotword accuracy/speed trade-off matters we can gate this behind a
+> "hotwords enabled" builder and default to greedy. Neither is locked in.
 
 ## Migration: lumen-asr → lumen-asr-engine
 
