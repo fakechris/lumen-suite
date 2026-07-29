@@ -42,9 +42,11 @@
 **Status**：Not Started
 
 ### Stage M3：Live 连续录音（麦克风）
-**Goal**：把现有 cpal 采集从"按住说、整段进内存"扩展为**连续长录音**——分块累积/落盘、暂停/继续、时长无上限（不再受 audio.rs 的"~30s headroom"假设约束）。产出会议 wav，喂 M2 管线。仅用**已有 mic 权限**，无需新平台端口、无需 Screen Recording。
-**Success**：连续录 30–60 分钟稳定落盘 → 走 M2 出带说话人转录。内存不随时长无界增长。
-**归属**：lumen-asr（crates/lumen-asr/audio、会议会话类型）
+**Goal**：新增**独立的连续录音路径**（不改动听写现有的 hold-to-talk `AudioCapture`，避免回归听写）：cpal 连续采集 → 分块**增量写入 wav 文件**、暂停/继续、时长无上限、内存不随时长增长。录制生命周期（start/recording/paused/stop→finalize），产出会议 wav 喂 M2 管线。仅用**已有 mic 权限**。
+**模式互斥（模式仲裁器）**：会议是长时**独占**采集模式。开始录制时**挂起听写全局热键**（注销 / 或 handler no-op 并提示"会议录制中"），停止后恢复。原因：① cpal 单输入设备，麦克风独占；② 听写会向光标注入文字，开会时误触会污染文档。v1 互斥；"边开会边听写记笔记"（同一路音频 fan-out 双消费）留作未来增强。
+**启动方式**：会议**不靠热键**，由 UI 显式"开始会议"触发（M3 先用 Tauri 命令 start/stop 驱动、可测；精致按钮与录制状态 UI 在 M4）。
+**Success**：连续录 30–60 分钟稳定落盘、内存有界；录制期间听写热键被挂起、停止后恢复；产出 wav 走 M2 出带说话人转录。
+**归属**：lumen-asr（crates/lumen-asr 新录音器、apps/desktop 的热键仲裁 + start/stop 命令）
 **Status**：Not Started
 （未来增强：系统音频/loopback 采集远程对方声音——新增 SystemAudioCapture 平台端口 + Screen Recording 权限，不在 v1。）
 
