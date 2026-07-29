@@ -62,6 +62,7 @@
 **架构**：双层——**录制中** streaming Paraformer 按 VAD 逐语音段出实时粗稿(无说话人标签,diar 是后处理重活);**停止后** offline Paraformer(带时间戳+热词)精转录 + diar-rs 分说话人对齐,产出最终带说话人逐字稿替换实时版。
 **子阶段**：
 - **P1** Paraformer 引擎接入 lumen-asr-engine（suite）:offline(时间戳+热词) + streaming 两种,经 sherpa-onnx online/offline 识别 API,模型经 lumen-models 解析。
+- **P2-hotword（决策 A，2026-07-29）**：sherpa 的 Paraformer **不支持引擎级热词**（只对 transducer 有效）——已把引擎改 greedy+安全忽略热词。热词改走**转录后词典纠正**：复用 corrector/lumen-dictionary,对会议逐字稿做后处理纠正人名/术语。（选项 B=换 zipformer 原生热词,暂不做。）
 - **P2** 会议 offline 管线切到 Paraformer（lumen-meeting）:带词级时间戳(喂 M4c 回听)+ 热词(复用 lumen-dictionary);diar-rs 说话人与 Paraformer 词时间戳对齐(仿 lumen-cut)。
 - **P3** 实时层:录制中后台 streaming Paraformer 按 VAD 逐段 → Tauri 事件透出实时逐字稿到录制界面。
 - **P4** 崩溃恢复:启动时检测残留"录制中"会议 → 收尾 wav + 转录(前半段不丢)。
