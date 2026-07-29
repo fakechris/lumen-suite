@@ -47,7 +47,7 @@
 **启动方式**：会议**不靠热键**，由 UI 显式"开始会议"触发（M3 先用 Tauri 命令 start/stop 驱动、可测；精致按钮与录制状态 UI 在 M4）。
 **Success**：连续录 30–60 分钟稳定落盘、内存有界；录制期间听写热键被挂起、停止后恢复；产出 wav 走 M2 出带说话人转录。
 **归属**：lumen-asr（crates/lumen-asr 新录音器、apps/desktop 的热键仲裁 + start/stop 命令）
-**Status**：Not Started
+**Status**：Complete（2026-07-28，asr PR #40）。独立连续录音器（cpal 流式写 wav、内存有界、Drop 收尾）+ 模式仲裁器（双向互斥：会议挂起听写热键、听写中拒开会议，任何失败路径都恢复麦克风/热键）+ start/stop/pause/resume 命令。audio.rs 零改动。
 （未来增强：系统音频/loopback 采集远程对方声音——新增 SystemAudioCapture 平台端口 + Screen Recording 权限，不在 v1。）
 
 ### Stage M4：会议库 UI + 播放器 + 纪要 + 导出
