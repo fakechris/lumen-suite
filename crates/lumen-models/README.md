@@ -1,6 +1,6 @@
 # lumen-models
 
-Lumen 产品簇的共享模型层：ASR 模型的**路径解析**、**就绪校验**、**跨进程安装锁**与 **SenseVoice 下载安装**。统一了此前在 `lumen-asr/crates/lumen-asr` 与 `lumen-navi/crates/lumen-asr-engine` 中重复实现的 `paths.rs` / `install_lock.rs` / `download.rs`。
+Lumen 产品簇的共享模型层：ASR 模型的**路径解析**、**就绪校验**、**跨进程安装锁**与 **模型下载安装**（SenseVoice、offline / streaming Paraformer）。统一了此前在 `lumen-asr/crates/lumen-asr` 与 `lumen-navi/crates/lumen-asr-engine` 中重复实现的 `paths.rs` / `install_lock.rs` / `download.rs`。
 
 行为契约见 [`contracts/SHARED_MODELS_CONTRACT.md`](../../contracts/SHARED_MODELS_CONTRACT.md)（自 v1.1 起 canonical source 在 lumen-suite）。`lib.rs` 中的 `shared_model_contract_matches_cluster_v1` 测试将契约正文 pin 到 cluster v1 哈希（FNV-1a 64 = `0xc87789f4de205e71`）。
 
@@ -8,7 +8,11 @@ Lumen 产品簇的共享模型层：ASR 模型的**路径解析**、**就绪校�
 
 ## Features
 
-- `download`（默认开启）：SenseVoice 包下载安装（系统 `curl` + `tar`，无额外 Rust 依赖）。关闭后仅保留路径/锁逻辑，依赖只有 `fs2` / `serde` / `serde_json` / `thiserror`。
+- `download`（默认开启）：sherpa 包下载安装（系统 `curl` + `tar -xjf`，`.tar.bz2`，无额外 Rust 依赖）。关闭后仅保留路径/锁逻辑，依赖只有 `fs2` / `serde` / `serde_json` / `thiserror`。
+  - SenseVoice：`download_sensevoice_package` → `<models>/sensevoice`（整目录发布）。
+  - Paraformer offline：`download_paraformer_offline_package` → `<models>/paraformer/offline`（仅挑 `model.int8.onnx`｜`model.onnx` + `tokens.txt`）。
+  - Paraformer streaming：`download_paraformer_streaming_package` → `<models>/paraformer/streaming`（仅挑 `encoder`/`decoder` `.int8.onnx`｜`.onnx` + `tokens.txt`，优先 int8）。
+  - 三者共用同一泛化引擎（`download_model_package` + `ModelPackage`）、同一 `ModelInstallLock`（每个 `models_root` 一把，跨引擎互斥）、同一 `DownloadProgress` 进度协议；已就绪时短路不下载。sherpa 归档解压后带一层前缀目录（`sherpa-onnx-…/`），发布时按就绪校验递归定位并剥离。
 
 ## 迁移映射
 

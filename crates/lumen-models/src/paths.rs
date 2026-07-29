@@ -118,6 +118,44 @@ pub fn shared_whisper_dir(models_root: Option<&Path>) -> PathBuf {
     lumen_models_dir_with_override(models_root).join("whisper")
 }
 
+/// Canonical install / default lookup dir for the **offline** Paraformer model
+/// under the cluster root: `<models>/paraformer/offline`.
+pub fn shared_paraformer_offline_dir(models_root: Option<&Path>) -> PathBuf {
+    lumen_models_dir_with_override(models_root)
+        .join("paraformer")
+        .join("offline")
+}
+
+/// Canonical install / default lookup dir for the **streaming** Paraformer
+/// model under the cluster root: `<models>/paraformer/streaming`.
+pub fn shared_paraformer_streaming_dir(models_root: Option<&Path>) -> PathBuf {
+    lumen_models_dir_with_override(models_root)
+        .join("paraformer")
+        .join("streaming")
+}
+
+/// Offline Paraformer dir under the shared cluster root (`paraformer/offline`).
+///
+/// Paraformer has no legacy per-app layout or env override, so this is simply
+/// the shared install target — ready or not.
+pub fn default_paraformer_offline_dir() -> PathBuf {
+    default_paraformer_offline_dir_with_root(None)
+}
+
+pub fn default_paraformer_offline_dir_with_root(models_root: Option<&Path>) -> PathBuf {
+    shared_paraformer_offline_dir(models_root)
+}
+
+/// Streaming Paraformer dir under the shared cluster root
+/// (`paraformer/streaming`).
+pub fn default_paraformer_streaming_dir() -> PathBuf {
+    default_paraformer_streaming_dir_with_root(None)
+}
+
+pub fn default_paraformer_streaming_dir_with_root(models_root: Option<&Path>) -> PathBuf {
+    shared_paraformer_streaming_dir(models_root)
+}
+
 /// Pre-cluster per-app roots, scanned on every platform so upgrades never
 /// force a re-download (contract §5).
 pub fn legacy_model_roots(home: &Path) -> Vec<PathBuf> {
@@ -444,6 +482,48 @@ pub fn whisper_tokens_path(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Offline Paraformer readiness: one known model file plus `tokens.txt`.
+pub fn paraformer_offline_ready(dir: &Path) -> bool {
+    paraformer_offline_model_path(dir).is_some() && paraformer_tokens_path(dir).is_some()
+}
+
+/// Streaming Paraformer readiness: `*encoder*.onnx` + `*decoder*.onnx` +
+/// `tokens.txt`.
+pub fn paraformer_streaming_ready(dir: &Path) -> bool {
+    paraformer_encoder_path(dir).is_some()
+        && paraformer_decoder_path(dir).is_some()
+        && paraformer_tokens_path(dir).is_some()
+}
+
+pub fn paraformer_offline_model_path(dir: &Path) -> Option<PathBuf> {
+    for name in [
+        "model.int8.onnx",
+        "model.onnx",
+        "model.quant.onnx",
+        "paraformer.onnx",
+    ] {
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // Fall back to any *paraformer*.onnx that is not an encoder/decoder split.
+    matching_file(dir, "paraformer", ".onnx")
+}
+
+pub fn paraformer_encoder_path(dir: &Path) -> Option<PathBuf> {
+    matching_file(dir, "encoder", ".onnx")
+}
+
+pub fn paraformer_decoder_path(dir: &Path) -> Option<PathBuf> {
+    matching_file(dir, "decoder", ".onnx")
+}
+
+pub fn paraformer_tokens_path(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("tokens.txt");
+    path.is_file().then_some(path)
+}
+
 fn matching_file(dir: &Path, contains: &str, suffix: &str) -> Option<PathBuf> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -536,6 +616,55 @@ mod tests {
                 home.join(".lumen-navi/models"),
             ]
         );
+    }
+
+    #[test]
+    fn paraformer_shared_dirs_are_under_models_root() {
+        let root = temp_dir("pf-root");
+        assert_eq!(
+            shared_paraformer_offline_dir(Some(&root)),
+            root.join("paraformer").join("offline")
+        );
+        assert_eq!(
+            shared_paraformer_streaming_dir(Some(&root)),
+            root.join("paraformer").join("streaming")
+        );
+        assert_eq!(
+            default_paraformer_offline_dir_with_root(Some(&root)),
+            root.join("paraformer").join("offline")
+        );
+        assert_eq!(
+            default_paraformer_streaming_dir_with_root(Some(&root)),
+            root.join("paraformer").join("streaming")
+        );
+    }
+
+    #[test]
+    fn paraformer_offline_ready_requires_model_and_tokens() {
+        let dir = temp_dir("pf-offline-ready");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!paraformer_offline_ready(&dir));
+        std::fs::write(dir.join("model.int8.onnx"), b"m").unwrap();
+        assert!(!paraformer_offline_ready(&dir));
+        std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+        assert!(paraformer_offline_ready(&dir));
+        assert_eq!(
+            paraformer_offline_model_path(&dir),
+            Some(dir.join("model.int8.onnx"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paraformer_streaming_ready_requires_encoder_decoder_tokens() {
+        let dir = temp_dir("pf-streaming-ready");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("encoder.int8.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.int8.onnx"), b"d").unwrap();
+        assert!(!paraformer_streaming_ready(&dir));
+        std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+        assert!(paraformer_streaming_ready(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
