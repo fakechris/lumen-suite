@@ -62,12 +62,12 @@
 **架构**：双层——**录制中** streaming Paraformer 按 VAD 逐语音段出实时粗稿(无说话人标签,diar 是后处理重活);**停止后** offline Paraformer(带时间戳+热词)精转录 + diar-rs 分说话人对齐,产出最终带说话人逐字稿替换实时版。
 **子阶段**：
 - **P1** Paraformer 引擎接入 lumen-asr-engine（suite）:offline(时间戳+热词) + streaming 两种,经 sherpa-onnx online/offline 识别 API,模型经 lumen-models 解析。
-- **P2-hotword（决策 A，2026-07-29）**：sherpa 的 Paraformer **不支持引擎级热词**（只对 transducer 有效）——已把引擎改 greedy+安全忽略热词。热词改走**转录后词典纠正**：复用 corrector/lumen-dictionary,对会议逐字稿做后处理纠正人名/术语。（选项 B=换 zipformer 原生热词,暂不做。）
+- **P2-hotword（决策 A，2026-07-29）**：sherpa 的 Paraformer **不支持引擎级热词**（只对 transducer 有效）——已把引擎改 greedy+安全忽略热词。热词改走**转录后词典纠正**：复用 corrector/lumen-dictionary,对会议逐字稿做后处理纠正人名/术语。（选项 B=换 zipformer 原生热词,暂不做。）**Complete**（2026-07-29，asr PR #55）：新模块 lumen-meeting/correct.rs（精确替换优先 + CJK 首尾锚定等长窗口编辑距离 + Latin token 编辑距离,精确率优先,空词典 no-op）,在 process_meeting 转录后、组装前跑（逐字稿与纪要都吃纠正后文本）,引擎无关跨平台,词级 timing 仅做精确替换保留 [start,end]。局限:无拼音故中文同音字不纠、2 字 CJK 不模糊纠（已注明）。
 - **P2** 会议 offline 管线切到 Paraformer（lumen-meeting）:带词级时间戳(喂 M4c 回听)+ 热词(复用 lumen-dictionary);diar-rs 说话人与 Paraformer 词时间戳对齐(仿 lumen-cut)。
 - **P3** 实时层:录制中后台 streaming Paraformer 按 VAD 逐段 → Tauri 事件透出实时逐字稿到录制界面。
-- **P4** 崩溃恢复:启动时检测残留"录制中"会议 → 收尾 wav + 转录(前半段不丢)。
+- **P4** 崩溃恢复:启动时检测残留"录制中"会议 → 收尾 wav + 转录(前半段不丢)。**Complete**（2026-07-29，asr PR #54）：repair_wav_header 按文件长度回填 RIFF/data size（hound 标准读回验证、幂等、拒非 wav/截断）,Store::list_meetings_by_status 查残留,启动独立线程 recover_interrupted_meetings 扫 recording 残留 → 修复+set Processing+复用 spawn_meeting_processing 转录;无音频标 failed（保留可见）。跨平台,不阻塞启动,听写/正常 start-stop 零改动。
 **商用前置**：核实 Paraformer(FunASR)模型许可证可商用(与 diar 的 CC-BY-NC 一起过)。
-**Status**：P1 开工（2026-07-29）
+**Status**：**M6 Complete**（2026-07-29）——P1 Paraformer 引擎接入（offline 带时间戳+streaming）、P2 会议管线切 Paraformer + diar 对齐、P2-hotword 决策 A 词典纠正（PR #55）、P3 实时逐字稿（PR #53）、P4 崩溃恢复（PR #54）全部落地。会议双层链路（录制中实时粗稿 + 停止后带说话人精转录 + 词典纠正 + 崩溃恢复）整套齐。剩余需**实机 dogfood 验证**（Paraformer 模型下载→实时字幕→停止转录→纠正效果→杀进程重启恢复）。
 
 ### Stage M5：说话人注册（跨会议身份）
 **Goal**：给 diar-rs 加 enrollment/voiceprint（基于现有 WeSpeaker 256-d embedding：注册库存 `~/Library/Application Support/Lumen/identity/`，聚类后与注册 embedding 余弦匹配）。会议里"这是 Chris"的注册/识别 UI。跨会议身份成为共享资产（Voice 会议 / Cut 说话人标注 / Navi 记忆归属）。
