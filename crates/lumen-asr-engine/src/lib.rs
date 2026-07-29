@@ -82,7 +82,8 @@ pub enum AsrEngineId {
     SenseVoiceSherpa,
     Whisper,
     Qwen3Asr,
-    /// Local sherpa-onnx Paraformer (offline, with word timestamps + hotwords).
+    /// Local sherpa-onnx Paraformer (offline, greedy decoding + word
+    /// timestamps; hotwords are unsupported by Paraformer).
     Paraformer,
     /// OpenAI-compatible HTTP engine (was serialized as `other` in lumen-asr).
     OpenAiAudio,
@@ -305,7 +306,8 @@ pub enum EngineKind {
     Whisper,
     /// Local Qwen3-ASR via MLX Python worker.
     Qwen,
-    /// Local sherpa-onnx offline Paraformer (word timestamps + hotwords).
+    /// Local sherpa-onnx offline Paraformer (greedy decoding + word
+    /// timestamps; hotwords are unsupported by Paraformer).
     /// The **streaming** Paraformer engine is a different port
     /// ([`crate::StreamingParaformerAsr`]) and is not represented here, since
     /// it implements [`crate::StreamingAsrEngine`], not [`AsrEngine`].

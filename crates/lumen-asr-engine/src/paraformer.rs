@@ -1,21 +1,21 @@
 //! Offline Paraformer ASR via sherpa-onnx.
 //!
 //! Paraformer is the meeting workhorse (see `docs/MEETING.md` Stage M6): it
-//! emits **word/token-level timestamps** natively and supports **hotword /
-//! contextual biasing**. This engine wraps sherpa-onnx's
-//! `OfflineParaformerModelConfig` (a single `model.onnx` + shared
-//! `tokens.txt`) and maps the decoded token timestamps into
-//! [`WordTiming`]s on the [`AsrResult`].
+//! emits **word/token-level timestamps** natively. This engine wraps
+//! sherpa-onnx's `OfflineParaformerModelConfig` (a single `model.onnx` + shared
+//! `tokens.txt`), decodes with **`greedy_search`**, and maps the decoded token
+//! timestamps into [`WordTiming`]s on the [`AsrResult`].
 //!
-//! ## Hotwords
-//! sherpa-onnx contextual biasing only takes effect under
-//! `decoding_method = "modified_beam_search"`, so the recognizer is built with
-//! that method (a deliberate default for the meeting use-case; slightly slower
-//! than greedy but enables per-request hotwords). Per-request
-//! [`AsrRequest::hotwords`] are injected with
-//! `OfflineRecognizer::create_stream_with_hotwords`; when a request has no
-//! hotwords a plain stream is used. Global `hotwords_score` and `modeling_unit`
-//! are configurable via the builders.
+//! ## Hotwords (unsupported by Paraformer)
+//! sherpa-onnx contextual biasing / hotwords only work with **transducer**
+//! models under `modified_beam_search`. Offline Paraformer supports **only
+//! `greedy_search`**, so `create_stream_with_hotwords` / `hotwords_score` /
+//! `modeling_unit` have no effect here (and can make recognizer creation or
+//! decoding fail). This engine therefore ignores [`AsrRequest::hotwords`]:
+//! when a request carries hotwords they are logged and dropped, and a plain
+//! stream is used. Hotword-style biasing for meetings must be handled upstream
+//! (post-processing) or by switching to a transducer model — not in this
+//! engine. Native timestamps are unaffected and remain fully supported.
 
 use crate::model_paths::ParaformerOfflineModelPaths;
 use crate::{AsrEngine, AsrEngineId, AsrError, AsrRequest, AsrResult, WordTiming};
@@ -27,11 +27,6 @@ use std::sync::Arc;
 
 #[cfg(feature = "sherpa")]
 use sherpa_onnx::{OfflineParaformerModelConfig, OfflineRecognizer, OfflineRecognizerConfig};
-
-/// Default contextual-biasing boost applied to hotword tokens.
-const DEFAULT_HOTWORDS_SCORE: f32 = 2.0;
-/// Chinese Paraformer models are character-modelled; hotwords bias per CJK char.
-const DEFAULT_MODELING_UNIT: &str = "cjkchar";
 
 #[derive(Debug, Clone)]
 enum ModelSource {
@@ -65,14 +60,12 @@ struct ParaformerInner {
     source: ModelSource,
     /// Result label only — Paraformer offline has no language config field.
     language: String,
-    hotwords_score: f32,
-    modeling_unit: String,
     max_audio_bytes: usize,
     #[cfg(feature = "sherpa")]
     recognizer: Mutex<Option<OfflineRecognizer>>,
 }
 
-/// Offline Paraformer engine (word timestamps + hotwords).
+/// Offline Paraformer engine (greedy decoding + native word timestamps).
 pub struct ParaformerAsr {
     inner: Arc<ParaformerInner>,
 }
@@ -101,8 +94,6 @@ impl ParaformerAsr {
             inner: Arc::new(ParaformerInner {
                 source,
                 language: "zh".into(),
-                hotwords_score: DEFAULT_HOTWORDS_SCORE,
-                modeling_unit: DEFAULT_MODELING_UNIT.into(),
                 max_audio_bytes: 8 * 1024 * 1024,
                 #[cfg(feature = "sherpa")]
                 recognizer: Mutex::new(None),
@@ -114,8 +105,6 @@ impl ParaformerAsr {
     fn rebuilt(&self, f: impl FnOnce(&mut ParaformerInnerSettings)) -> Self {
         let mut s = ParaformerInnerSettings {
             language: self.inner.language.clone(),
-            hotwords_score: self.inner.hotwords_score,
-            modeling_unit: self.inner.modeling_unit.clone(),
             max_audio_bytes: self.inner.max_audio_bytes,
         };
         f(&mut s);
@@ -123,8 +112,6 @@ impl ParaformerAsr {
             inner: Arc::new(ParaformerInner {
                 source: self.inner.source.clone(),
                 language: s.language,
-                hotwords_score: s.hotwords_score,
-                modeling_unit: s.modeling_unit,
                 max_audio_bytes: s.max_audio_bytes,
                 #[cfg(feature = "sherpa")]
                 recognizer: Mutex::new(None),
@@ -136,18 +123,6 @@ impl ParaformerAsr {
     pub fn with_language(self, language: impl Into<String>) -> Self {
         let language = language.into();
         self.rebuilt(|s| s.language = language)
-    }
-
-    /// Contextual-biasing boost for hotword tokens (default `2.0`).
-    pub fn with_hotwords_score(self, score: f32) -> Self {
-        self.rebuilt(|s| s.hotwords_score = score)
-    }
-
-    /// Hotword modeling unit (default `cjkchar`; use `bpe`/`cjkchar+bpe` for
-    /// BPE Paraformer variants).
-    pub fn with_modeling_unit(self, unit: impl Into<String>) -> Self {
-        let unit = unit.into();
-        self.rebuilt(|s| s.modeling_unit = unit)
     }
 
     pub fn with_max_audio_bytes(self, max_audio_bytes: usize) -> Self {
@@ -166,8 +141,6 @@ impl ParaformerAsr {
 
 struct ParaformerInnerSettings {
     language: String,
-    hotwords_score: f32,
-    modeling_unit: String,
     max_audio_bytes: usize,
 }
 
@@ -237,10 +210,10 @@ impl ParaformerInner {
         config.model_config.tokens = Some(paths.tokens.display().to_string());
         config.model_config.num_threads = 2;
         config.model_config.provider = Some("cpu".into());
-        // Contextual biasing (hotwords) requires modified_beam_search.
-        config.model_config.modeling_unit = Some(self.modeling_unit.clone());
-        config.decoding_method = Some("modified_beam_search".into());
-        config.hotwords_score = self.hotwords_score;
+        // Offline Paraformer only supports greedy_search. Hotwords / contextual
+        // biasing (which would need modified_beam_search + a transducer model)
+        // are intentionally not configured here.
+        config.decoding_method = Some("greedy_search".into());
 
         tracing::info!(model = %paths.model.display(), "creating Paraformer OfflineRecognizer");
         let rec = OfflineRecognizer::create(&config).ok_or_else(|| {
@@ -257,7 +230,6 @@ impl ParaformerInner {
         &self,
         samples: &[f32],
         sample_rate: u32,
-        hotwords: &[String],
     ) -> Result<(String, Vec<WordTiming>), AsrError> {
         self.ensure_recognizer()?;
         let guard = self.recognizer.lock();
@@ -265,18 +237,8 @@ impl ParaformerInner {
             .as_ref()
             .ok_or_else(|| AsrError::NotConfigured("paraformer recognizer missing".into()))?;
 
-        // Per-request hotwords: one phrase per line (sherpa contract).
-        let joined: String = hotwords
-            .iter()
-            .map(|h| h.trim())
-            .filter(|h| !h.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let stream = if joined.is_empty() {
-            recognizer.create_stream()
-        } else {
-            recognizer.create_stream_with_hotwords(&joined)
-        };
+        // Greedy decoding only: no per-request hotwords for offline Paraformer.
+        let stream = recognizer.create_stream();
 
         stream.accept_waveform(sample_rate as i32, samples);
         recognizer.decode(&stream);
@@ -312,6 +274,17 @@ impl AsrEngine for ParaformerAsr {
             return Err(AsrError::EmptyAudio);
         }
 
+        // Offline Paraformer only supports greedy_search, which cannot apply
+        // hotwords / contextual biasing. Rather than fail, we accept the request
+        // and ignore the hotwords (upstream post-processing or a transducer
+        // model is the path to biasing). Log once so this is visible.
+        if !req.hotwords.is_empty() {
+            tracing::warn!(
+                count = req.hotwords.len(),
+                "Paraformer offline ignores hotwords (unsupported: needs a transducer model + modified_beam_search); decoding without biasing"
+            );
+        }
+
         #[cfg(not(feature = "sherpa"))]
         {
             let _ = req;
@@ -325,9 +298,8 @@ impl AsrEngine for ParaformerAsr {
             let inner = Arc::clone(&self.inner);
             let samples = req.samples;
             let sr = req.sample_rate;
-            let hotwords = req.hotwords;
             let (text, words) =
-                tokio::task::spawn_blocking(move || inner.decode_sync(&samples, sr, &hotwords))
+                tokio::task::spawn_blocking(move || inner.decode_sync(&samples, sr))
                     .await
                     .map_err(|e| AsrError::Inference(e.to_string()))??;
             let (model, model_revision) = crate::model_identity_from_path(&self.model_dir());
@@ -409,12 +381,31 @@ mod tests {
     fn builders_preserve_settings() {
         let eng = ParaformerAsr::new("/models/paraformer/offline")
             .with_language("en")
-            .with_hotwords_score(3.5)
-            .with_modeling_unit("bpe")
             .with_max_audio_bytes(1234);
         assert_eq!(eng.inner.language, "en");
-        assert_eq!(eng.inner.hotwords_score, 3.5);
-        assert_eq!(eng.inner.modeling_unit, "bpe");
         assert_eq!(eng.inner.max_audio_bytes, 1234);
+    }
+
+    // Paraformer offline decodes greedily and cannot apply hotwords. A request
+    // that carries hotwords must be tolerated (logged + ignored), never rejected
+    // *because* of the hotwords.
+    #[tokio::test]
+    async fn hotwords_are_ignored_not_errored() {
+        let eng = ParaformerAsr::from_paths(ParaformerOfflineModelPaths {
+            model: "/nonexistent/model.onnx".into(),
+            tokens: "/nonexistent/tokens.txt".into(),
+        });
+        let req = AsrRequest::new(vec![0.0f32; 1600], 16_000)
+            .with_hotwords(vec!["Lumen".into(), "Paraformer".into()]);
+        let err = eng.transcribe(req).await.unwrap_err();
+        // The failure is never about hotwords: without `sherpa` the engine is
+        // unsupported; with it, the fake model path is simply not configured.
+        #[cfg(not(feature = "sherpa"))]
+        assert!(matches!(err, AsrError::Unsupported(_)), "got {err:?}");
+        #[cfg(feature = "sherpa")]
+        assert!(
+            matches!(err, AsrError::NotConfigured(_) | AsrError::Inference(_)),
+            "got {err:?}"
+        );
     }
 }
