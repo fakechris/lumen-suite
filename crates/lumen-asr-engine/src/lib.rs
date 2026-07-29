@@ -21,8 +21,10 @@ pub mod audio;
 mod cloud_openai;
 mod diagnostics;
 mod model_paths;
+mod paraformer;
 mod qwen;
 mod sensevoice;
+mod streaming;
 mod whisper;
 
 pub use audio::{
@@ -36,12 +38,15 @@ pub use diagnostics::{
     QwenShadowCandidate, QwenShadowDiagnostics, QwenShadowScore, QwenShadowSpan, QwenShadowStatus,
 };
 pub use model_paths::{
-    qwen_ready, sensevoice_model_path, sensevoice_ready, sensevoice_tokens_path,
-    whisper_decoder_path, whisper_encoder_path, whisper_ready, whisper_tokens_path,
+    paraformer_offline_ready, paraformer_streaming_ready, qwen_ready, sensevoice_model_path,
+    sensevoice_ready, sensevoice_tokens_path, whisper_decoder_path, whisper_encoder_path,
+    whisper_ready, whisper_tokens_path, ParaformerOfflineModelPaths, ParaformerStreamingModelPaths,
     SenseVoiceModelPaths, WhisperModelPaths,
 };
+pub use paraformer::ParaformerAsr;
 pub use qwen::{QwenAsr, QwenAsrConfig, QwenShadowRequest, QwenShadowTerm};
 pub use sensevoice::SenseVoiceSherpaAsr;
+pub use streaming::{StreamingAsrEngine, StreamingParaformerAsr, StreamingResult};
 pub use whisper::WhisperAsr;
 
 use async_trait::async_trait;
@@ -77,6 +82,8 @@ pub enum AsrEngineId {
     SenseVoiceSherpa,
     Whisper,
     Qwen3Asr,
+    /// Local sherpa-onnx Paraformer (offline, with word timestamps + hotwords).
+    Paraformer,
     /// OpenAI-compatible HTTP engine (was serialized as `other` in lumen-asr).
     OpenAiAudio,
     /// macOS Speech.framework (engine implemented by the consumer).
@@ -91,6 +98,7 @@ impl AsrEngineId {
             Self::SenseVoiceSherpa => "sensevoice_sherpa",
             Self::Whisper => "whisper",
             Self::Qwen3Asr => "qwen3_asr",
+            Self::Paraformer => "paraformer",
             Self::OpenAiAudio => "openai_audio",
             Self::Speech => "speech",
             Self::Other => "other",
@@ -130,6 +138,21 @@ impl AsrRequest {
     }
 }
 
+/// Word- (or token-) level timing produced by engines that expose alignment
+/// (offline Paraformer today). `start`/`end` are seconds from the start of the
+/// decoded audio. Consumed by lumen-transcript `Word` and meeting playback.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WordTiming {
+    /// The token or word surface form (a CJK character for Chinese Paraformer,
+    /// a sub-word/word for BPE models).
+    pub word: String,
+    /// Start offset in seconds.
+    pub start: f64,
+    /// End offset in seconds. Falls back to `start` when the model only
+    /// reports a start timestamp for the last token.
+    pub end: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrResult {
     pub text: String,
@@ -142,6 +165,11 @@ pub struct AsrResult {
     /// 0.0 = unknown (no engine currently reports calibrated confidence).
     #[serde(default)]
     pub confidence: f32,
+    /// Word/token-level timestamps when the engine emits them (offline
+    /// Paraformer). Empty for engines without alignment; skipped in JSON so
+    /// existing transcript payloads are byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<WordTiming>,
     #[serde(default)]
     pub diagnostics: AsrRuntimeDiagnostics,
 }
@@ -155,6 +183,7 @@ impl AsrResult {
             engine_label,
             language: None,
             confidence: 0.0,
+            words: Vec::new(),
             diagnostics: AsrRuntimeDiagnostics::default(),
         }
     }
@@ -276,6 +305,11 @@ pub enum EngineKind {
     Whisper,
     /// Local Qwen3-ASR via MLX Python worker.
     Qwen,
+    /// Local sherpa-onnx offline Paraformer (word timestamps + hotwords).
+    /// The **streaming** Paraformer engine is a different port
+    /// ([`crate::StreamingParaformerAsr`]) and is not represented here, since
+    /// it implements [`crate::StreamingAsrEngine`], not [`AsrEngine`].
+    Paraformer,
     /// macOS Speech.framework (consumer-built engine).
     Speech,
     /// OpenAI-compatible HTTP ASR (Whisper API, DashScope Qwen ASR, ...).
@@ -288,6 +322,7 @@ impl EngineKind {
             Self::SenseVoice => "sensevoice",
             Self::Whisper => "whisper",
             Self::Qwen => "qwen",
+            Self::Paraformer => "paraformer",
             Self::Speech => "speech",
             Self::OpenAiAudio => "openai_audio",
         }
@@ -307,6 +342,9 @@ impl EngineKind {
             }
             "whisper" | "local_whisper" => Some(Self::Whisper),
             "qwen" | "qwen3_asr" | "qwen3-asr" | "local_qwen" => Some(Self::Qwen),
+            "paraformer" | "paraformer_offline" | "paraformer-offline" | "funasr" => {
+                Some(Self::Paraformer)
+            }
             "speech" | "macos_speech" | "apple" => Some(Self::Speech),
             "openai_audio" | "openai" | "http" | "cloud" | "qwen_asr" | "qwen-asr"
             | "qwen_asr_0.8b" => Some(Self::OpenAiAudio),
@@ -367,6 +405,19 @@ pub fn probe_status(kind: EngineKind, model_dir: Option<&Path>) -> EngineStatus 
                     "Qwen3-ASR MLX snapshot ready".into()
                 } else {
                     "missing config/weights/tokenizer files (or no model_dir provided)".into()
+                },
+            }
+        }
+        EngineKind::Paraformer => {
+            let ready = model_dir.map(paraformer_offline_ready).unwrap_or(false);
+            EngineStatus {
+                kind,
+                ready,
+                model_dir: dir_display(model_dir),
+                detail: if ready {
+                    "Paraformer offline model ready".into()
+                } else {
+                    "missing model*.onnx + tokens.txt (or no model_dir provided)".into()
                 },
             }
         }
@@ -436,7 +487,9 @@ pub fn build_engine(cfg: &EngineBuildConfig) -> Result<Option<Arc<dyn AsrEngine>
         EngineKind::Speech => Ok(None),
         EngineKind::SenseVoice => {
             if cfg.model_dir.as_os_str().is_empty() {
-                return Err("sensevoice requires model_dir (path resolution is consumer-side)".into());
+                return Err(
+                    "sensevoice requires model_dir (path resolution is consumer-side)".into(),
+                );
             }
             let eng = SenseVoiceSherpaAsr::new(cfg.model_dir.clone())
                 .with_language(sensevoice_language_from_locale(&cfg.locale))
@@ -464,6 +517,24 @@ pub fn build_engine(cfg: &EngineBuildConfig) -> Result<Option<Arc<dyn AsrEngine>
                 ));
             }
             tracing::info!(dir = %cfg.model_dir.display(), "ASR engine: whisper");
+            Ok(Some(Arc::new(eng)))
+        }
+        EngineKind::Paraformer => {
+            if cfg.model_dir.as_os_str().is_empty() {
+                return Err(
+                    "paraformer requires model_dir (path resolution is consumer-side)".into(),
+                );
+            }
+            let eng = ParaformerAsr::new(cfg.model_dir.clone())
+                .with_language(locale_to_lang_hint(&cfg.locale).unwrap_or_else(|| "zh".into()))
+                .with_max_audio_bytes(cfg.max_audio_bytes);
+            if !eng.is_ready() {
+                return Err(format!(
+                    "Paraformer offline model not ready under {}",
+                    cfg.model_dir.display()
+                ));
+            }
+            tracing::info!(dir = %cfg.model_dir.display(), "ASR engine: paraformer (offline)");
             Ok(Some(Arc::new(eng)))
         }
         EngineKind::Qwen => {
@@ -590,14 +661,20 @@ mod tests {
     // Union of both products' parse tests.
     #[test]
     fn parse_engines() {
-        assert_eq!(EngineKind::parse("sensevoice"), Some(EngineKind::SenseVoice));
+        assert_eq!(
+            EngineKind::parse("sensevoice"),
+            Some(EngineKind::SenseVoice)
+        );
         assert_eq!(EngineKind::parse("sherpa"), Some(EngineKind::SenseVoice));
         assert_eq!(
             EngineKind::parse("local_sensevoice"),
             Some(EngineKind::SenseVoice)
         );
         assert_eq!(EngineKind::parse("whisper"), Some(EngineKind::Whisper));
-        assert_eq!(EngineKind::parse("local_whisper"), Some(EngineKind::Whisper));
+        assert_eq!(
+            EngineKind::parse("local_whisper"),
+            Some(EngineKind::Whisper)
+        );
         assert_eq!(EngineKind::parse("speech"), Some(EngineKind::Speech));
         assert_eq!(EngineKind::parse("apple"), Some(EngineKind::Speech));
         assert_eq!(EngineKind::parse("openai"), Some(EngineKind::OpenAiAudio));
@@ -649,12 +726,19 @@ mod tests {
 
     #[test]
     fn local_engines_require_model_dir() {
-        for kind in [EngineKind::SenseVoice, EngineKind::Whisper, EngineKind::Qwen] {
+        for kind in [
+            EngineKind::SenseVoice,
+            EngineKind::Whisper,
+            EngineKind::Qwen,
+        ] {
             let cfg = EngineBuildConfig {
                 kind,
                 ..EngineBuildConfig::default()
             };
-            assert!(build_engine(&cfg).is_err(), "{kind:?} should require model_dir");
+            assert!(
+                build_engine(&cfg).is_err(),
+                "{kind:?} should require model_dir"
+            );
         }
     }
 
@@ -685,6 +769,69 @@ mod tests {
         assert!(!probe_status(EngineKind::SenseVoice, None).ready);
         assert!(!probe_status(EngineKind::Whisper, None).ready);
         assert!(!probe_status(EngineKind::Qwen, None).ready);
+        assert!(!probe_status(EngineKind::Paraformer, None).ready);
+    }
+
+    #[test]
+    fn parse_paraformer_aliases() {
+        assert_eq!(
+            EngineKind::parse("paraformer"),
+            Some(EngineKind::Paraformer)
+        );
+        assert_eq!(
+            EngineKind::parse("paraformer_offline"),
+            Some(EngineKind::Paraformer)
+        );
+        assert_eq!(
+            EngineKind::parse("Paraformer-Offline"),
+            Some(EngineKind::Paraformer)
+        );
+        assert_eq!(EngineKind::parse("funasr"), Some(EngineKind::Paraformer));
+        assert_eq!(EngineKind::Paraformer.as_str(), "paraformer");
+        assert_eq!(AsrEngineId::Paraformer.as_str(), "paraformer");
+    }
+
+    #[test]
+    fn paraformer_build_requires_model_dir() {
+        let cfg = EngineBuildConfig {
+            kind: EngineKind::Paraformer,
+            ..EngineBuildConfig::default()
+        };
+        assert!(build_engine(&cfg).is_err());
+    }
+
+    #[test]
+    fn asr_result_words_round_trip_and_skip_when_empty() {
+        // Empty words are omitted entirely (backward-compatible payload).
+        let mut r = AsrResult::new("hi", AsrEngineId::SenseVoiceSherpa);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("words"),
+            "empty words must be skipped: {json}"
+        );
+
+        // Populated words serialize and round-trip.
+        r.words = vec![
+            WordTiming {
+                word: "你".into(),
+                start: 0.0,
+                end: 0.5,
+            },
+            WordTiming {
+                word: "好".into(),
+                start: 0.5,
+                end: 1.0,
+            },
+        ];
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"words\""));
+        let back: AsrResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.words, r.words);
+
+        // Legacy payloads without a `words` key still deserialize.
+        let legacy = r#"{"text":"x","engine":"whisper","engine_label":"whisper","language":null}"#;
+        let parsed: AsrResult = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.words.is_empty());
     }
 
     #[test]

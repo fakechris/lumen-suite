@@ -54,6 +54,89 @@ impl WhisperModelPaths {
     }
 }
 
+/// Explicit offline Paraformer model files (`model.onnx` + `tokens.txt`).
+///
+/// Directory convention (resolved by the consumer / lumen-models):
+/// `<models>/paraformer/offline/{model.onnx,tokens.txt}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParaformerOfflineModelPaths {
+    /// `model.int8.onnx` / `model.onnx` / `model.quant.onnx`.
+    pub model: PathBuf,
+    /// `tokens.txt`.
+    pub tokens: PathBuf,
+}
+
+impl ParaformerOfflineModelPaths {
+    /// Probe `dir` for the known offline Paraformer file layout.
+    pub fn discover(dir: &Path) -> Option<Self> {
+        Some(Self {
+            model: paraformer_offline_model_path(dir)?,
+            tokens: paraformer_tokens_path(dir)?,
+        })
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.model.is_file() && self.tokens.is_file()
+    }
+}
+
+/// Explicit streaming Paraformer model files (encoder/decoder + `tokens.txt`).
+///
+/// Directory convention (resolved by the consumer / lumen-models):
+/// `<models>/paraformer/streaming/{encoder.onnx,decoder.onnx,tokens.txt}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParaformerStreamingModelPaths {
+    pub encoder: PathBuf,
+    pub decoder: PathBuf,
+    pub tokens: PathBuf,
+}
+
+impl ParaformerStreamingModelPaths {
+    /// Probe `dir` for the known streaming Paraformer file layout.
+    pub fn discover(dir: &Path) -> Option<Self> {
+        Some(Self {
+            encoder: matching_file(dir, "encoder", ".onnx")?,
+            decoder: matching_file(dir, "decoder", ".onnx")?,
+            tokens: paraformer_tokens_path(dir)?,
+        })
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.encoder.is_file() && self.decoder.is_file() && self.tokens.is_file()
+    }
+}
+
+pub fn paraformer_offline_ready(dir: &Path) -> bool {
+    paraformer_offline_model_path(dir).is_some() && paraformer_tokens_path(dir).is_some()
+}
+
+pub fn paraformer_streaming_ready(dir: &Path) -> bool {
+    matching_file(dir, "encoder", ".onnx").is_some()
+        && matching_file(dir, "decoder", ".onnx").is_some()
+        && paraformer_tokens_path(dir).is_some()
+}
+
+pub fn paraformer_offline_model_path(dir: &Path) -> Option<PathBuf> {
+    for name in [
+        "model.int8.onnx",
+        "model.onnx",
+        "model.quant.onnx",
+        "paraformer.onnx",
+    ] {
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // Fall back to any *paraformer*.onnx that is not an encoder/decoder split.
+    matching_file(dir, "paraformer", ".onnx")
+}
+
+pub fn paraformer_tokens_path(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("tokens.txt");
+    path.is_file().then_some(path)
+}
+
 pub fn sensevoice_ready(dir: &Path) -> bool {
     sensevoice_model_path(dir).is_some() && sensevoice_tokens_path(dir).is_some()
 }
@@ -182,6 +265,38 @@ mod tests {
         assert!(!sensevoice_ready(&dir));
         assert!(!whisper_ready(&dir));
         assert!(!qwen_ready(&dir));
+        assert!(!paraformer_offline_ready(&dir));
+        assert!(!paraformer_streaming_ready(&dir));
         assert!(SenseVoiceModelPaths::discover(&dir).is_none());
+        assert!(ParaformerOfflineModelPaths::discover(&dir).is_none());
+        assert!(ParaformerStreamingModelPaths::discover(&dir).is_none());
+    }
+
+    #[test]
+    fn paraformer_offline_discovery_finds_model_and_tokens() {
+        let dir = temp_dir("pf-off");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model.int8.onnx"), b"m").unwrap();
+        std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+
+        let paths = ParaformerOfflineModelPaths::discover(&dir).unwrap();
+        assert_eq!(paths.model, dir.join("model.int8.onnx"));
+        assert!(paths.is_ready());
+        assert!(paraformer_offline_ready(&dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paraformer_streaming_discovery_matches_encoder_decoder() {
+        let dir = temp_dir("pf-stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("encoder.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.onnx"), b"d").unwrap();
+        std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+
+        let paths = ParaformerStreamingModelPaths::discover(&dir).unwrap();
+        assert!(paths.is_ready());
+        assert!(paraformer_streaming_ready(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
