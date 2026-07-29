@@ -55,7 +55,7 @@
 **子阶段**：M4a 后端闭环（stop→自动转录→结构化 minutes→状态推进；说话人 reassign/merge；4 预设导出；均可测）→ M4b 列表+详情壳+纪要页 → M4c 逐字稿阅读器+底部播放器+说话人修正 UI → M4d 录制窗口+导出面板。
 **Success**：端到端：开会 → 停止自动转录出说话人分段 → 纪要（条目可点跳原文）→ 逐字稿阅读+回听 → 改/合并说话人 → 4 预设导出（含 Cut 可导入 JSON）。
 **归属**：lumen-asr（apps/desktop、src-tauri、lumen-prompts、lumen-store、export）
-**Status**：M4a Complete（2026-07-28，asr PR #41）——说话人 reassign/merge（同会议校验）、get_meeting_detail、4 预设导出（含 lumen-transcript.v1=Cut 格式）、结构化 minutes（JSON+容错解析+LLM 生成）、process_meeting 状态机（+Transcribing/Summarizing）。**M4a-2 待做**：stop→自动触发 process_meeting（需 macOS+diarize 门控构造 ASR 引擎+diar 模型路径）。M4b/c/d UI 未开工。顺带根治了 qwen_worker Windows flaky（启动等待 500ms→5s）。
+**Status**：M4a Complete（2026-07-28，asr PR #41）——说话人 reassign/merge（同会议校验）、get_meeting_detail、4 预设导出（含 lumen-transcript.v1=Cut 格式）、结构化 minutes（JSON+容错解析+LLM 生成）、process_meeting 状态机（+Transcribing/Summarizing）。**M4a-2 Complete**（asr PR #43）：diarize feature 接进 macOS desktop 构建、stop 后台专用线程跑 process_meeting（!Send Store→独立 SQLite 连接）、process_meeting_now 命令、缺模型/非 macOS 标 failed。**M4b Complete**（asr PR #42）：会议 tab+列表（搜索/过滤/分组）+详情+结构化纪要页+最小逐字稿。diar 模型已放置 `~/Library/Application Support/Lumen/models/diar/`。顺带根治 qwen_worker Windows flaky（500ms→5s）。**缺口→M4a-3**：无“开始会议”UI 入口（start/stop 只有 Tauri 命令、无按钮）、失败原因不可见、缺模型/无 LLM 无引导。M4c/d 未开工。
 
 ### Stage M5：说话人注册（跨会议身份）
 **Goal**：给 diar-rs 加 enrollment/voiceprint（基于现有 WeSpeaker 256-d embedding：注册库存 `~/Library/Application Support/Lumen/identity/`，聚类后与注册 embedding 余弦匹配）。会议里"这是 Chris"的注册/识别 UI。跨会议身份成为共享资产（Voice 会议 / Cut 说话人标注 / Navi 记忆归属）。
