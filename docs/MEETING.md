@@ -50,11 +50,12 @@
 **Status**：Complete（2026-07-28，asr PR #40）。独立连续录音器（cpal 流式写 wav、内存有界、Drop 收尾）+ 模式仲裁器（双向互斥：会议挂起听写热键、听写中拒开会议，任何失败路径都恢复麦克风/热键）+ start/stop/pause/resume 命令。audio.rs 零改动。
 （未来增强：系统音频/loopback 采集远程对方声音——新增 SystemAudioCapture 平台端口 + Screen Recording 权限，不在 v1。）
 
-### Stage M4：会议库 UI + 播放器 + 纪要 + 导出
-**Goal**：desktop 加 `"meeting"` TabId 与会议库面板（录音列表、带说话人的转录视图、说话人重命名）。音频播放器 + 点击 segment 跳转。会议纪要：lumen-prompts 加 minutes intent（摘要/行动项/决议），走既有 corrector LLM 层。"Export to Cut"（多 segment transcript）。
-**Success**：端到端可用：开会 → 转录 → 查看/改说话人 → 出纪要 → 导出 Cut 打开无需重转。
-**归属**：lumen-asr（apps/desktop、lumen-prompts、export）
-**Status**：Not Started
+### Stage M4：会议库 UI + 播放器 + 纪要 + 导出 —— 详见 docs/MEETING_M4_UX.md
+**UX 基准（2026-07-28 用户确认）**：列表+详情页；详情 = Granola 纪要优先 + Otter 转录/播放联动 + Descript-lite 说话人修正；不做多轨时间线。三个 v1 裁决：①录制窗口无实时逐字稿/说话人计数（离线架构）；②纪要为结构化 JSON（条目带 source 时间戳，可点跳原文）；③JSON 导出 = lumen-transcript.v1（= Cut 导入格式）。
+**子阶段**：M4a 后端闭环（stop→自动转录→结构化 minutes→状态推进；说话人 reassign/merge；4 预设导出；均可测）→ M4b 列表+详情壳+纪要页 → M4c 逐字稿阅读器+底部播放器+说话人修正 UI → M4d 录制窗口+导出面板。
+**Success**：端到端：开会 → 停止自动转录出说话人分段 → 纪要（条目可点跳原文）→ 逐字稿阅读+回听 → 改/合并说话人 → 4 预设导出（含 Cut 可导入 JSON）。
+**归属**：lumen-asr（apps/desktop、src-tauri、lumen-prompts、lumen-store、export）
+**Status**：M4a 开工（2026-07-28）
 
 ### Stage M5：说话人注册（跨会议身份）
 **Goal**：给 diar-rs 加 enrollment/voiceprint（基于现有 WeSpeaker 256-d embedding：注册库存 `~/Library/Application Support/Lumen/identity/`，聚类后与注册 embedding 余弦匹配）。会议里"这是 Chris"的注册/识别 UI。跨会议身份成为共享资产（Voice 会议 / Cut 说话人标注 / Navi 记忆归属）。
