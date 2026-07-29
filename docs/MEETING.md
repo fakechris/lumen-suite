@@ -57,6 +57,17 @@
 **归属**：lumen-asr（apps/desktop、src-tauri、lumen-prompts、lumen-store、export）
 **Status**：M4a Complete（2026-07-28，asr PR #41）——说话人 reassign/merge（同会议校验）、get_meeting_detail、4 预设导出（含 lumen-transcript.v1=Cut 格式）、结构化 minutes（JSON+容错解析+LLM 生成）、process_meeting 状态机（+Transcribing/Summarizing）。**M4a-2 Complete**（asr PR #43）：diarize feature 接进 macOS desktop 构建、stop 后台专用线程跑 process_meeting（!Send Store→独立 SQLite 连接）、process_meeting_now 命令、缺模型/非 macOS 标 failed。**M4b Complete**（asr PR #42）：会议 tab+列表（搜索/过滤/分组）+详情+结构化纪要页+最小逐字稿。diar 模型已放置 `~/Library/Application Support/Lumen/models/diar/`。顺带根治 qwen_worker Windows flaky（500ms→5s）。**M4a-3 Complete**（asr PR #44）：内联“开始/停止会议”按钮+录制态计时（暂停留 M4d）、failure_reason（schema v7）+ 缺模型/平台不支持引导、无 LLM 时纪要页提示配置。**会议从 UI 端到端可用**。M4c（逐字稿播放器联动+说话人修正 UI）、M4d（正式录制窗口+暂停+导出面板）、M5（说话人注册）未开工。
 
+### Stage M6：实时逐字稿 + Paraformer 引擎（2026-07-29 决策）
+**背景/决策**：用户 dogfood 反馈"录制时是黑盒,要实时看到转录"。且经模型对比,**会议改用 Paraformer**（经 sherpa-onnx,不换框架）——它对会议三大需求都强:①真流式(streaming Paraformer→实时字幕)②原生时间戳(点句回听 M4c + 纪要跳原文)③热词(复用个人词典,人名术语更准);SenseVoice 的情绪/音频事件对会议无用。**听写继续用 SenseVoice**（快省够用,不动）。
+**架构**：双层——**录制中** streaming Paraformer 按 VAD 逐语音段出实时粗稿(无说话人标签,diar 是后处理重活);**停止后** offline Paraformer(带时间戳+热词)精转录 + diar-rs 分说话人对齐,产出最终带说话人逐字稿替换实时版。
+**子阶段**：
+- **P1** Paraformer 引擎接入 lumen-asr-engine（suite）:offline(时间戳+热词) + streaming 两种,经 sherpa-onnx online/offline 识别 API,模型经 lumen-models 解析。
+- **P2** 会议 offline 管线切到 Paraformer（lumen-meeting）:带词级时间戳(喂 M4c 回听)+ 热词(复用 lumen-dictionary);diar-rs 说话人与 Paraformer 词时间戳对齐(仿 lumen-cut)。
+- **P3** 实时层:录制中后台 streaming Paraformer 按 VAD 逐段 → Tauri 事件透出实时逐字稿到录制界面。
+- **P4** 崩溃恢复:启动时检测残留"录制中"会议 → 收尾 wav + 转录(前半段不丢)。
+**商用前置**：核实 Paraformer(FunASR)模型许可证可商用(与 diar 的 CC-BY-NC 一起过)。
+**Status**：P1 开工（2026-07-29）
+
 ### Stage M5：说话人注册（跨会议身份）
 **Goal**：给 diar-rs 加 enrollment/voiceprint（基于现有 WeSpeaker 256-d embedding：注册库存 `~/Library/Application Support/Lumen/identity/`，聚类后与注册 embedding 余弦匹配）。会议里"这是 Chris"的注册/识别 UI。跨会议身份成为共享资产（Voice 会议 / Cut 说话人标注 / Navi 记忆归属）。
 **Success**：注册一次后，后续会议自动把该说话人标为已知身份。
