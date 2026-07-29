@@ -39,7 +39,7 @@
 **Goal**：(a) 让 diar-rs 可作为 Rust 依赖被 asr 干净构建——vendored kaldi-native-fbank C++ 源码编译，去掉 build.rs 的 Python 定位（ADR-0001 阻塞项 2）；(b) 给定一个**预录 wav 文件**，跑通 diar-rs 分段+说话人 → 每轮次 AsrEngine 转录 → 拼成多 segment lumen-transcript.v1 → 存 v6。先不接 live 采集，用测试音频。
 **Success**：`cargo test`；asr 能 `cargo build`（无需 PYTHON env）；离线跑通样例会议 wav，产出带说话人的多段转录并入库。
 **归属**：suite/diar-rs（vendored fbank）+ lumen-asr（管线接入）
-**Status**：Not Started
+**Status**：Complete（2026-07-28，见本段顶部"状态"）
 
 ### Stage M3：Live 连续录音（麦克风）
 **Goal**：新增**独立的连续录音路径**（不改动听写现有的 hold-to-talk `AudioCapture`，避免回归听写）：cpal 连续采集 → 分块**增量写入 wav 文件**、暂停/继续、时长无上限、内存不随时长增长。录制生命周期（start/recording/paused/stop→finalize），产出会议 wav 喂 M2 管线。仅用**已有 mic 权限**。
