@@ -8,14 +8,21 @@
 //! - override: env [`ENV_LUMEN_MODELS_DIR`] or an explicit
 //!   `models_root` argument (e.g. Navi's `asr.models_root` config).
 //!
-//! Per-app legacy paths (`LumenAsr/models`, `LumenNavi/models`, dot
-//! directories, coli caches) are still **discovered** and selectable; new
-//! downloads always go to the shared root.
+//! Per-app legacy paths (`LumenAsr/models`, `LumenNavi/models`, the original
+//! 闪电说 `Shandianshuo/models`, dot directories, coli caches) are still
+//! **discovered** and selectable — including packages under non-canonical
+//! folder names such as `sensevoice-small`; new downloads always go to the
+//! shared root, and legacy models are never moved, copied, or deleted.
+//!
+//! [`resolve_sensevoice_dir`] / [`resolve_qwen_asr_dir`] are the unified
+//! "shared root first, legacy fallback" entry points consumed by all Lumen
+//! products (asr, cut, translation, navi).
 //!
 //! Behavior is specified by `contracts/SHARED_MODELS_CONTRACT.md` (cluster
 //! contract v1); see the contract hash test in `lib.rs`.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Env var for the shared Lumen models root (cluster-wide).
@@ -38,7 +45,8 @@ pub struct ModelCandidate {
     pub label: String,
     pub ready: bool,
     /// `"env"`, `"lumen-shared"`, `"legacy-lumen-asr"`, `"legacy-lumen-navi"`,
-    /// `"coli-cache"`, `"lumen-asr"` or `"huggingface-cache"`.
+    /// `"legacy-shandianshuo"`, `"coli-cache"`, `"lumen-asr"` or
+    /// `"huggingface-cache"`.
     pub source: String,
 }
 
@@ -158,10 +166,17 @@ pub fn default_paraformer_streaming_dir_with_root(models_root: Option<&Path>) ->
 
 /// Pre-cluster per-app roots, scanned on every platform so upgrades never
 /// force a re-download (contract §5).
+///
+/// `Shandianshuo/models` is the original 闪电说 (pre-rename) app-support root;
+/// scanning it lets long-time users keep models they installed under the old
+/// product name (e.g. `Shandianshuo/models/sensevoice-small`) without a
+/// re-download. It is a superset of the contract's minimum list — discovery
+/// only, never moved or deleted.
 pub fn legacy_model_roots(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join("Library/Application Support/LumenAsr/models"),
         home.join("Library/Application Support/LumenNavi/models"),
+        home.join("Library/Application Support/Shandianshuo/models"),
         home.join(".lumen-asr/models"),
         home.join(".lumen-navi/models"),
     ]
@@ -169,11 +184,33 @@ pub fn legacy_model_roots(home: &Path) -> Vec<PathBuf> {
 
 fn legacy_source(root: &Path) -> &'static str {
     let path = root.to_string_lossy();
-    if path.contains("LumenAsr") || path.contains(".lumen-asr") {
+    if path.contains("Shandianshuo") {
+        "legacy-shandianshuo"
+    } else if path.contains("LumenAsr") || path.contains(".lumen-asr") {
         "legacy-lumen-asr"
     } else {
         "legacy-lumen-navi"
     }
+}
+
+/// First-level subdirectories of `root` that pass `ready` (skipping `extract`
+/// temp dirs). Used to discover model packages whose directory name is not the
+/// canonical engine name — e.g. legacy `sensevoice-small` under
+/// `Shandianshuo/models`, or a user-renamed folder under the shared root.
+fn ready_subdirs(root: &Path, ready: fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && !entry.file_name().to_string_lossy().contains("extract")
+                && ready(&path)
+            {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// Resolve the SenseVoice dir: env → shared cluster dir → other ready
@@ -231,12 +268,63 @@ pub fn default_qwen_dir() -> PathBuf {
     if qwen_ready(&app_dir) {
         return app_dir;
     }
-    for (path, _) in qwen_discovery_paths() {
+    for (path, _) in qwen_discovery_paths(None) {
         if path != app_dir && qwen_ready(&path) {
             return path;
         }
     }
     app_dir
+}
+
+/// Resolve the **first existing and ready** SenseVoice directory for any Lumen
+/// product (asr dictation + meeting, cut, translation, navi) to consume, or
+/// `None` when no usable model is installed anywhere.
+///
+/// Unlike [`default_sensevoice_dir_with_root`] (which returns the shared
+/// download target even when nothing is installed yet), this returns a path
+/// only when a real, ready model exists. Resolution order:
+///
+/// 1. Engine env overrides (`LUMEN_SENSEVOICE_DIR`, then the Navi-era
+///    `LUMEN_NAVI_SENSEVOICE_DIR`) — used only if the pointed-at dir is ready.
+/// 2. Shared cluster dir `lumen_models_dir()/sensevoice`.
+/// 3. Any other ready first-level subdir under the shared root.
+/// 4. Legacy fallbacks (read-only, never moved): `LumenAsr/models`,
+///    `LumenNavi/models`, `Shandianshuo/models` (incl. `sensevoice-small`),
+///    dot-dir variants, and known `.coli/models` packages.
+///
+/// `override_root` (e.g. Navi's `asr.models_root`) overrides the shared root.
+pub fn resolve_sensevoice_dir(override_root: Option<&Path>) -> Option<PathBuf> {
+    for key in [ENV_LUMEN_SENSEVOICE_DIR, ENV_LUMEN_NAVI_SENSEVOICE_DIR] {
+        if let Some(path) = nonempty_env_path(key) {
+            if sensevoice_ready(&path) {
+                return Some(path);
+            }
+        }
+    }
+    sensevoice_discovery_paths(override_root)
+        .into_iter()
+        .map(|(path, _)| path)
+        .find(|path| sensevoice_ready(path))
+}
+
+/// Resolve the **first existing and ready** Qwen3-ASR snapshot directory for
+/// any Lumen product to consume, or `None` when none is installed.
+///
+/// Resolution order:
+///
+/// 1. Shared cluster dir `lumen_models_dir()/qwen3-asr-0.6b-8bit` and any other
+///    ready first-level subdir under the shared root.
+/// 2. Legacy fallbacks (read-only, never moved): `LumenAsr/models/qwen3-asr-0.6b-8bit`,
+///    any ready `*qwen*` subdir under `Shandianshuo/models` / other legacy roots.
+/// 3. The Hugging Face MLX snapshot cache
+///    (`~/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-0.6B-8bit`).
+///
+/// `override_root` overrides the shared root.
+pub fn resolve_qwen_asr_dir(override_root: Option<&Path>) -> Option<PathBuf> {
+    qwen_discovery_paths(override_root)
+        .into_iter()
+        .map(|(path, _)| path)
+        .find(|path| qwen_ready(path))
 }
 
 fn sensevoice_discovery_paths(models_root: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
@@ -260,8 +348,12 @@ fn whisper_discovery_paths(models_root: Option<&Path>) -> Vec<(PathBuf, &'static
     )
 }
 
+/// Canonical Qwen3-ASR snapshot directory name (matches the MLX model id).
+const QWEN_DIR_NAME: &str = "qwen3-asr-0.6b-8bit";
+
 /// Shared canonical dir first, then any other ready first-level subdir under
-/// the shared root, then legacy roots, then known coli cache packages.
+/// the shared root, then legacy roots (canonical join plus any ready subdir,
+/// e.g. `sensevoice-small`), then known coli cache packages.
 fn shared_engine_discovery_paths(
     models_root: Option<&Path>,
     canonical_name: &str,
@@ -270,22 +362,20 @@ fn shared_engine_discovery_paths(
 ) -> Vec<(PathBuf, &'static str)> {
     let shared_root = lumen_models_dir_with_override(models_root);
     let mut paths = vec![(shared_root.join(canonical_name), "lumen-shared")];
-    if let Ok(entries) = std::fs::read_dir(&shared_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir()
-                && entry.file_name() != canonical_name
-                && !entry.file_name().to_string_lossy().contains("extract")
-                && ready(&path)
-            {
-                paths.push((path, "lumen-shared"));
-            }
+    for path in ready_subdirs(&shared_root, ready) {
+        if path.file_name() != Some(OsStr::new(canonical_name)) {
+            paths.push((path, "lumen-shared"));
         }
     }
     let home = user_home_dir();
     for root in legacy_model_roots(&home) {
         let source = legacy_source(&root);
         paths.push((root.join(canonical_name), source));
+        for path in ready_subdirs(&root, ready) {
+            if path.file_name() != Some(OsStr::new(canonical_name)) {
+                paths.push((path, source));
+            }
+        }
     }
     for name in coli_package_names {
         paths.push((home.join(".coli/models").join(name), "coli-cache"));
@@ -293,9 +383,29 @@ fn shared_engine_discovery_paths(
     paths
 }
 
-fn qwen_discovery_paths() -> Vec<(PathBuf, &'static str)> {
-    let mut paths = vec![(qwen_app_model_dir(), "lumen-asr")];
-    let snapshots = user_home_dir()
+/// Shared root (canonical + ready subdirs) first, then legacy app dirs
+/// (`LumenAsr` and any ready `*qwen*` subdir under `Shandianshuo` / other
+/// legacy roots), then the Hugging Face MLX snapshot cache.
+fn qwen_discovery_paths(models_root: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
+    let shared_root = lumen_models_dir_with_override(models_root);
+    let mut paths = vec![(shared_root.join(QWEN_DIR_NAME), "lumen-shared")];
+    for path in ready_subdirs(&shared_root, qwen_ready) {
+        if path.file_name() != Some(OsStr::new(QWEN_DIR_NAME)) {
+            paths.push((path, "lumen-shared"));
+        }
+    }
+    let home = user_home_dir();
+    // Canonical legacy app dir (LumenAsr / .lumen-asr).
+    paths.push((qwen_app_model_dir(), "lumen-asr"));
+    // Any ready qwen package sitting under a legacy root under a non-canonical
+    // name (e.g. `Shandianshuo/models/qwen3-asr-...`).
+    for root in legacy_model_roots(&home) {
+        let source = legacy_source(&root);
+        for path in ready_subdirs(&root, qwen_ready) {
+            paths.push((path, source));
+        }
+    }
+    let snapshots = home
         .join(".cache/huggingface/hub")
         .join("models--mlx-community--Qwen3-ASR-0.6B-8bit")
         .join("snapshots");
@@ -314,11 +424,12 @@ fn qwen_app_model_dir() -> PathBuf {
     let home = user_home_dir();
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/LumenAsr/models/qwen3-asr-0.6b-8bit")
+        home.join("Library/Application Support/LumenAsr/models")
+            .join(QWEN_DIR_NAME)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        home.join(".lumen-asr/models/qwen3-asr-0.6b-8bit")
+        home.join(".lumen-asr/models").join(QWEN_DIR_NAME)
     }
 }
 
@@ -353,7 +464,7 @@ pub fn scan_model_candidates_with_root(models_root: Option<&Path>) -> Vec<ModelC
         let install_target = path == shared_whisper;
         push_candidate(&mut out, "whisper", path, source, install_target);
     }
-    for (path, source) in qwen_discovery_paths() {
+    for (path, source) in qwen_discovery_paths(models_root) {
         push_candidate(&mut out, "qwen", path, source, false);
     }
     let mut seen = HashSet::new();
@@ -612,6 +723,7 @@ mod tests {
             vec![
                 home.join("Library/Application Support/LumenAsr/models"),
                 home.join("Library/Application Support/LumenNavi/models"),
+                home.join("Library/Application Support/Shandianshuo/models"),
                 home.join(".lumen-asr/models"),
                 home.join(".lumen-navi/models"),
             ]
@@ -842,6 +954,121 @@ mod tests {
         std::fs::write(shared.join("tokens.txt"), b"tokens").unwrap();
 
         assert_eq!(default_sensevoice_dir_with_root(Some(&root)), shared);
+        let _ = std::fs::remove_dir_all(fake_home);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // --- unified resolve (shared root + legacy fallback) -------------------
+
+    /// Writes a ready SenseVoice layout into `dir`.
+    fn write_sensevoice(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("model.int8.onnx"), b"model").unwrap();
+        std::fs::write(dir.join("tokens.txt"), b"tokens").unwrap();
+    }
+
+    /// Writes a ready Qwen3-ASR (single-weight) layout into `dir`.
+    fn write_qwen(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"model").unwrap();
+        std::fs::write(dir.join("vocab.json"), b"{}").unwrap();
+        std::fs::write(dir.join("merges.txt"), b"").unwrap();
+    }
+
+    /// Clears all inputs that could leak the tester's real machine into resolve.
+    fn isolate_home(fake_home: &Path) -> (EnvGuard, EnvGuard, EnvGuard, EnvGuard) {
+        (
+            EnvGuard::set("HOME", fake_home.as_os_str()),
+            EnvGuard::unset("USERPROFILE"),
+            EnvGuard::unset(ENV_LUMEN_SENSEVOICE_DIR),
+            EnvGuard::unset(ENV_LUMEN_NAVI_SENSEVOICE_DIR),
+        )
+    }
+
+    #[test]
+    fn resolve_sensevoice_prefers_shared_root() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let fake_home = temp_dir("resolve-sv-shared-home");
+        let _iso = isolate_home(&fake_home);
+
+        let root = temp_dir("resolve-sv-shared-root");
+        let shared = root.join("sensevoice");
+        write_sensevoice(&shared);
+
+        assert_eq!(resolve_sensevoice_dir(Some(&root)), Some(shared));
+        let _ = std::fs::remove_dir_all(fake_home);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_sensevoice_falls_back_to_shandianshuo_small() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let fake_home = temp_dir("resolve-sv-sdss-home");
+        let _iso = isolate_home(&fake_home);
+        // Legacy 闪电说 layout: models live under `sensevoice-small`.
+        let legacy =
+            fake_home.join("Library/Application Support/Shandianshuo/models/sensevoice-small");
+        write_sensevoice(&legacy);
+
+        // Shared root exists but has no model → must fall back in-place.
+        let empty_root = temp_dir("resolve-sv-sdss-root");
+        std::fs::create_dir_all(&empty_root).unwrap();
+
+        assert_eq!(
+            resolve_sensevoice_dir(Some(&empty_root)),
+            Some(legacy.clone())
+        );
+
+        // And it shows up as a selectable candidate with the new source label.
+        let candidates = scan_model_candidates_with_root(Some(&empty_root));
+        assert!(candidates.iter().any(|c| {
+            c.engine == "sensevoice"
+                && c.path == legacy
+                && c.source == "legacy-shandianshuo"
+                && c.ready
+        }));
+        let _ = std::fs::remove_dir_all(fake_home);
+        let _ = std::fs::remove_dir_all(empty_root);
+    }
+
+    #[test]
+    fn resolve_sensevoice_none_when_nothing_installed() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let fake_home = temp_dir("resolve-sv-none-home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let _iso = isolate_home(&fake_home);
+
+        let empty_root = temp_dir("resolve-sv-none-root");
+        std::fs::create_dir_all(&empty_root).unwrap();
+
+        assert_eq!(resolve_sensevoice_dir(Some(&empty_root)), None);
+        let _ = std::fs::remove_dir_all(fake_home);
+        let _ = std::fs::remove_dir_all(empty_root);
+    }
+
+    #[test]
+    fn resolve_qwen_prefers_shared_then_shandianshuo_then_none() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let fake_home = temp_dir("resolve-qwen-home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let _iso = isolate_home(&fake_home);
+
+        // (a) nothing installed → None.
+        let root = temp_dir("resolve-qwen-root");
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(resolve_qwen_asr_dir(Some(&root)), None);
+
+        // (b) only legacy Shandianshuo/models/<name> has a ready qwen.
+        let legacy =
+            fake_home.join("Library/Application Support/Shandianshuo/models/qwen3-asr-0.6b-8bit");
+        write_qwen(&legacy);
+        assert_eq!(resolve_qwen_asr_dir(Some(&root)), Some(legacy.clone()));
+
+        // (c) shared root wins once a ready qwen is installed there.
+        let shared = root.join("qwen3-asr-0.6b-8bit");
+        write_qwen(&shared);
+        assert_eq!(resolve_qwen_asr_dir(Some(&root)), Some(shared));
         let _ = std::fs::remove_dir_all(fake_home);
         let _ = std::fs::remove_dir_all(root);
     }
