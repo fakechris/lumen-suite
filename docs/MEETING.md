@@ -99,7 +99,12 @@
 - **L4b 跨轨说话人统一**：仅三证据可合并——同一 verified identity / 同一人工标注 / 强回声证据;纯 centroid 相似不合并(未知人合错代价高)。
 - **AEC(采集端兄弟项)**：自研 AEC 不做。首选 macOS AUVoiceIO(VoiceProcessingIO,系统级 AEC,render reference 自动;风险:捆绑 NS 可能伤会议室远场人声,需实机验证、可关);备选 WebRTC AEC3(webrtc-audio-processing,把 system tap 当 render reference 喂,可控+跨平台但集成重)。L4a 转写层去重先行止血。
 **推迟**：在线未知人聚类(L1/L2 临时 ID)、多通道空间处理、mono 同轨 overlap 逐词分配(需会议平台独立音轨或源分离)。
-**Status**：**L1 + L4a Complete**（2026-07-31）。suite PR #3(多流:StreamingRecognizer/StreamingStream,真模型双流 3/3 实测)+ asr #77(回声抑制:四证据+fail-open+隐私化诊断 sidecar+spawn_blocking)+ asr #78(L1 地基:rev bump、t0 统一时间轴+timeline.json、有界 fan-out(64,try_send+丢包计数)、可修订事件契约、单线程双流 live、前端 Map+现场/远端;并顺手把 echo 配对接上 timeline skew)。**L2(live 标注)开工**。待实机:双轨实时字幕、现场/远端标签、外放回声抑制(sidecar 可查)、长会流畅度。
+**Status**：**L1+L2+L3+L4a 全部 Complete**（2026-07-31/08-01）。
+- suite #3 多流 + asr #77 回声抑制 + #78 L1 地基(t0 时间轴/有界 fan-out/可修订事件/双流 live/echo×timeline skew)。
+- #79 L2 标注:v12 live_annotations、行尾 chip、离线 reconciliation(manual 最高,cluster 部分覆盖按 segment 拆 M{k})。
+- **#81 L2 修复(dogfood 三问题)**:①终稿丢标注根因=**粒度错配**(live 短行 vs 离线长 turn,标注覆盖 <50% 全被丢)→ 对称重叠(对 segment 或标注自身任一 ≥50%)+ `SampleClock`(首包锚定+按采样数推进,暂停/抖动免疫)+ 集成测试;②chip 菜单 fixed 定位自适应;③「此句及之后」开放式标注(nearest-preceding-start,closed 更具体优先,live 行内继承)。
+- **#80 L3 实时认人**:lumen-identity `VerificationReport`(evidence 与 decision 分离,离线/实时共用打分)、live policy(2-3s+0.60→Provisional"名?";≥3s+0.70+margin0.08→VerifiedAuto)、每轨 30s ring window(与 SampleClock 同源)+ 独立 embedder 线程(有界队列忙时丢)、streak(track+identity 连续2次升格)、`self_identity_id`("这是我"→live 显示"我")、schema v13 speakers provenance(identity_id/attribution_origin/attribution_confidence,manual/verification 都写)。显示优先级 manual(含开放范围继承)> voiceprint(provisional 带?)。真模型 embedder 测试实跑通过。
+**剩余**:L4b 跨轨统一(仅 identity/manual/强回声证据)、"人工标注一句→本场临时声纹传播"(L3.5,未注册人的标注传播)、AEC AUVoiceIO 采集端。**待实机**:注册两人→live 自动出名、自己="我"、标注进终稿(粒度修复后)、此句及之后继承。
 
 ## 商用前置（beta → 付费之间必须做）
 
