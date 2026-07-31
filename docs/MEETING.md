@@ -99,7 +99,7 @@
 - **L4b 跨轨说话人统一**：仅三证据可合并——同一 verified identity / 同一人工标注 / 强回声证据;纯 centroid 相似不合并(未知人合错代价高)。
 - **AEC(采集端兄弟项)**：自研 AEC 不做。首选 macOS AUVoiceIO(VoiceProcessingIO,系统级 AEC,render reference 自动;风险:捆绑 NS 可能伤会议室远场人声,需实机验证、可关);备选 WebRTC AEC3(webrtc-audio-processing,把 system tap 当 render reference 喂,可控+跨平台但集成重)。L4a 转写层去重先行止血。
 **推迟**：在线未知人聚类(L1/L2 临时 ID)、多通道空间处理、mono 同轨 overlap 逐词分配(需会议平台独立音轨或源分离)。
-**Status**：L1(suite 多流)+ L4a 开工（2026-07-31）
+**Status**：**L1 + L4a Complete**（2026-07-31）。suite PR #3(多流:StreamingRecognizer/StreamingStream,真模型双流 3/3 实测)+ asr #77(回声抑制:四证据+fail-open+隐私化诊断 sidecar+spawn_blocking)+ asr #78(L1 地基:rev bump、t0 统一时间轴+timeline.json、有界 fan-out(64,try_send+丢包计数)、可修订事件契约、单线程双流 live、前端 Map+现场/远端;并顺手把 echo 配对接上 timeline skew)。**L2(live 标注)开工**。待实机:双轨实时字幕、现场/远端标签、外放回声抑制(sidecar 可查)、长会流畅度。
 
 ## 商用前置（beta → 付费之间必须做）
 
