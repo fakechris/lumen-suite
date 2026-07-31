@@ -81,6 +81,14 @@
 - **系统音频双轨**（asr PR #70）：Core Audio **全局 process tap**（mono mixdown、排除自身 PID、dlsym 弱链接 gate ≥14.2）→ `<id>.system.wav` 第二轨（复用 WavSink,崩溃恢复可修）；管线两轨各自 diar+转写、system 说话人标签偏移、按时间归并（segments.channel 标 mic/system）；权限（NSAudioCaptureUsageDescription）/低版本/失败一律**降级 mic-only 不失败**；schema v9（system_audio_path+channel）。config `meeting.system_audio` 默认开。
 **Status**：Complete（合入 main）。**待实机验证**：检测误报率（正常用电脑不乱弹）、TCC 系统音频权限弹窗、真会议对方声音入稿、注册→跨会议自动认出。
 
+### Stage M8：竞品对标批（2026-07-31，asr PR #72-#75）
+逆向研究同类会议产品后落地四项（研究材料仅本地,不入公共仓库）：
+- **#74 自动停录**：检测所启录制的候选消失稳定 10s → 弹"会议似乎已结束。停止录音?"确认（拒绝后本次抑制、绝不静默停）；本地检测埋点（prompt/stop shown/accepted/dismissed 计数 JSON + get_meeting_detection_stats,量化误报率）。
+- **#73 日历关联**：开录后台查 EventKit now−5..+15min 事件（进行中优先）→ 无标题则自动命名、参会人前置进 notes（纪要 LLM 可用）；手写 EventKit FFI 零新依赖、只读、权限拒/超时 2s 静默降级；config meeting.calendar_link 默认开。
+- **#75 声纹共识**：lumen-identity 每人多样本（≤10,兼容旧格式）+ 双阈值共识（单样本≥0.70 或 半数且≥2 票≥0.60）+ 3s 最短语音门槛（识别与注册,太短报错）；store v11 单活动唯一索引（仅 recording,脏数据保最新余置 failed）。
+- **#72 Onboarding 不阻塞**：进向导即后台自动下 SenseVoice（MeetingModelsProvider 升级为 FIFO 串行队列,贴合 single-flight）,常驻角标+popover,模型步可跳过;Paraformer（~1GB）不自动、一键入队。
+**Status**：Complete（合入 main,c16460b）。待实机验证:日历自动命名/权限弹窗、Zoom 挂断→停录提示、多样本认人更稳、onboarding 后台下载。
+
 ## 商用前置（beta → 付费之间必须做）
 
 - 换掉 diar-rs 的 CC-BY-NC 分割模型：自训 MIT `microsoft/wavlm-base` 分割头，或把 pyannote 的 MIT segmentation 导成 ONNX。见 ADR-0001。
