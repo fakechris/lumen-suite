@@ -46,7 +46,10 @@ pub use model_paths::{
 pub use paraformer::ParaformerAsr;
 pub use qwen::{QwenAsr, QwenAsrConfig, QwenShadowRequest, QwenShadowTerm};
 pub use sensevoice::SenseVoiceSherpaAsr;
-pub use streaming::{StreamingAsrEngine, StreamingParaformerAsr, StreamingResult};
+pub use streaming::{
+    StreamingAsrEngine, StreamingEndpointConfig, StreamingParaformerAsr, StreamingRecognizer,
+    StreamingResult, StreamingStream,
+};
 pub use whisper::WhisperAsr;
 
 use async_trait::async_trait;
