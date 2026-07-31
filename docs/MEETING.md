@@ -89,6 +89,18 @@
 - **#72 Onboarding 不阻塞**：进向导即后台自动下 SenseVoice（MeetingModelsProvider 升级为 FIFO 串行队列,贴合 single-flight）,常驻角标+popover,模型步可跳过;Paraformer（~1GB）不自动、一键入队。
 **Status**：Complete（合入 main,c16460b）。待实机验证:日历自动命名/权限弹窗、Zoom 挂断→停录提示、多样本认人更稳、onboarding 后台下载。
 
+### Stage M9：流式说话人标注（设计定稿 2026-07-31）
+**核心原则**：`audio_source(mic|system) ≠ speaker`,两维度正交——source 只管"现场/远端"显示,身份优先级 `manual > verified > offline_diarization > unknown`,通道先验不参与身份判定。四概念彻底分开:identity_id / display_name(快照) / attribution_origin(manual|verification|offline_diarization) / audio_source。"我"= config `self_identity_id`(渲染层翻译,不存字符串)。
+**分阶段**：
+- **L1 地基**：统一 meeting 时间轴(录音器启动取单一 monotonic t0,每轨 start_frame 由回调时间戳−t0 换算——不可用本轨帧数计时,tap 晚启动且可能丢帧;两 WAV 记录相对 t0 偏移入库)、有界非阻塞 live fan-out(满则丢 live 包并计数,录音回调绝不阻塞,WAV 仍权威)、**共享 OnlineRecognizer 双 OnlineStream**(suite lumen-asr-engine 改造,避免双载 ~1GB 模型)、可修订 live 事件(segmentId/revision/track/start/end,前端按 Map 原地更新)、system 轨接入 live("现场/远端"标签)。
+- **L2 人工标注**：每行 speaker chip;`live_annotations` 持久化(meeting_id+时间范围+channel+identity_id+provenance,立即落库;live 文本不持久化,P4 从 WAV 重转);停录后按时间重叠 reconciliation,manual 最高优先;离线 cluster 覆盖两个人工名 → 按 segment 拆不整体改名。
+- **L3 实时认人**：长驻 SpeakerEmbedder;lumen-identity 加 `VerificationReport{identity_id,best,runner_up,margin,votes,decision}`——离线/实时共用匹配引擎、只换 decision policy;分层:有效语音 2–3s 仅 provisional("李明?"),≥3s+阈值+margin → `verified_auto`,人工点击 → `confirmed_manual`;streak 按 track+identity_id(无稳定在线 cluster,不传播到未验证段);schema v12 给 Speaker 加 identity_id/attribution_origin/attribution_confidence。
+- **L4a 回声重复抑制**(独立可提前)：不戴耳机时远端声音经扬声器被 mic 拾回 → 同句双轨重复。多证据并举:合理 system→mic 延迟窗 + 高时间覆盖 + 足够长文本高相似 + 音频互相关(±300ms 归一化互相关);高置信才隐藏 mic 副本,留 suppressed_echo 诊断。短句("好的/对")不判。
+- **L4b 跨轨说话人统一**：仅三证据可合并——同一 verified identity / 同一人工标注 / 强回声证据;纯 centroid 相似不合并(未知人合错代价高)。
+- **AEC(采集端兄弟项)**：自研 AEC 不做。首选 macOS AUVoiceIO(VoiceProcessingIO,系统级 AEC,render reference 自动;风险:捆绑 NS 可能伤会议室远场人声,需实机验证、可关);备选 WebRTC AEC3(webrtc-audio-processing,把 system tap 当 render reference 喂,可控+跨平台但集成重)。L4a 转写层去重先行止血。
+**推迟**：在线未知人聚类(L1/L2 临时 ID)、多通道空间处理、mono 同轨 overlap 逐词分配(需会议平台独立音轨或源分离)。
+**Status**：L1(suite 多流)+ L4a 开工（2026-07-31）
+
 ## 商用前置（beta → 付费之间必须做）
 
 - 换掉 diar-rs 的 CC-BY-NC 分割模型：自训 MIT `microsoft/wavlm-base` 分割头，或把 pyannote 的 MIT segmentation 导成 ONNX。见 ADR-0001。
