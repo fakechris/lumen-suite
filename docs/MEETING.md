@@ -73,7 +73,13 @@
 **Goal**：给 diar-rs 加 enrollment/voiceprint（基于现有 WeSpeaker 256-d embedding：注册库存 `~/Library/Application Support/Lumen/identity/`，聚类后与注册 embedding 余弦匹配）。会议里"这是 Chris"的注册/识别 UI。跨会议身份成为共享资产（Voice 会议 / Cut 说话人标注 / Navi 记忆归属）。
 **Success**：注册一次后，后续会议自动把该说话人标为已知身份。
 **归属**：suite/diar-rs（enrollment）+ lumen-asr（UI、identity 存储）
-**Status**：Not Started
+**Status**：**Complete**（2026-07-30，asr PR #67+#69）。#67 参与者确认/标真名（display_name 非空即已确认、内联改名、逐字稿同步）。#69 声纹注册+跨会议自动认人：**无需改 diar-rs**（其 audio/fbank/onnx_emb 模块为 pub，asr 侧用同一 WeSpeaker 模型对每说话人最长 turns 重算 centroid，单坏 turn 容错）；新 crate lumen-identity（本地 JSON 身份库,0700/0600,原子写,余弦阈值 0.65 宁漏勿错,PII 不入日志）；schema v10 `speakers.embedding BLOB`；process 后自动认人（不覆盖已有名）；参与者区「注册声纹」+声纹库管理。双轨（M7）两轨都提 centroid。
+
+### Stage M7：会议检测 + 系统音频双轨（2026-07-30）
+**内容**：
+- **检测→弹窗**（asr PR #68）：macOS Core Audio 进程输入活动（ProcessObjectList + IsRunningInput,非 RTC）→ 纯策略状态机在 lumen-core（候选稳定 3s、2min 冷却、浏览器不误触、忽略自身、Recording 失败出口,21 单测）→ app 级弹窗→复用 start_meeting_recording。**默认关**（设置开启）、capability gate（14.x API 缺失优雅停用）。检测≠自动录:仅提示,用户点了才录。
+- **系统音频双轨**（asr PR #70）：Core Audio **全局 process tap**（mono mixdown、排除自身 PID、dlsym 弱链接 gate ≥14.2）→ `<id>.system.wav` 第二轨（复用 WavSink,崩溃恢复可修）；管线两轨各自 diar+转写、system 说话人标签偏移、按时间归并（segments.channel 标 mic/system）；权限（NSAudioCaptureUsageDescription）/低版本/失败一律**降级 mic-only 不失败**；schema v9（system_audio_path+channel）。config `meeting.system_audio` 默认开。
+**Status**：Complete（合入 main）。**待实机验证**：检测误报率（正常用电脑不乱弹）、TCC 系统音频权限弹窗、真会议对方声音入稿、注册→跨会议自动认出。
 
 ## 商用前置（beta → 付费之间必须做）
 
