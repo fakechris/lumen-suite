@@ -105,6 +105,17 @@ pub trait StreamingAsrEngine: Send {
 `accept_waveform` + `decode`, read `partial_text()` for the live caption, and
 on `is_endpoint()` snapshot then `reset()`.
 
+**Multi-track (mic + system audio):** one `StreamingRecognizer` loads the
+~1 GB model once and hands out any number of lightweight per-track
+`StreamingStream`s (`StreamingRecognizer::from_dir(dir)?` →
+`recognizer.new_stream()`; each stream implements `StreamingAsrEngine`).
+Decode per stream (`stream.decode()`) or batched across tracks
+(`recognizer.decode_batch(&mut [&mut mic, &mut system])`). Drive a recognizer
+and *all* of its streams from one dedicated thread (same-thread polling); the
+underlying sherpa objects are not synchronized for concurrent calls.
+`StreamingParaformerAsr` remains as the backward-compatible single-stream
+façade (recognizer + one stream, unchanged behavior).
+
 > **Open design points (subject to review):** (1) the streaming trait exposes
 > `result()`/`partial_text()` rather than the offline `words` timestamps —
 > streaming token timestamps are available from sherpa if the meeting layer
