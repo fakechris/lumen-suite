@@ -104,7 +104,11 @@
 - #79 L2 标注:v12 live_annotations、行尾 chip、离线 reconciliation(manual 最高,cluster 部分覆盖按 segment 拆 M{k})。
 - **#81 L2 修复(dogfood 三问题)**:①终稿丢标注根因=**粒度错配**(live 短行 vs 离线长 turn,标注覆盖 <50% 全被丢)→ 对称重叠(对 segment 或标注自身任一 ≥50%)+ `SampleClock`(首包锚定+按采样数推进,暂停/抖动免疫)+ 集成测试;②chip 菜单 fixed 定位自适应;③「此句及之后」开放式标注(nearest-preceding-start,closed 更具体优先,live 行内继承)。
 - **#80 L3 实时认人**:lumen-identity `VerificationReport`(evidence 与 decision 分离,离线/实时共用打分)、live policy(2-3s+0.60→Provisional"名?";≥3s+0.70+margin0.08→VerifiedAuto)、每轨 30s ring window(与 SampleClock 同源)+ 独立 embedder 线程(有界队列忙时丢)、streak(track+identity 连续2次升格)、`self_identity_id`("这是我"→live 显示"我")、schema v13 speakers provenance(identity_id/attribution_origin/attribution_confidence,manual/verification 都写)。显示优先级 manual(含开放范围继承)> voiceprint(provisional 带?)。真模型 embedder 测试实跑通过。
-**剩余**:L4b 跨轨统一(仅 identity/manual/强回声证据)、"人工标注一句→本场临时声纹传播"(L3.5,未注册人的标注传播)、AEC AUVoiceIO 采集端。**待实机**:注册两人→live 自动出名、自己="我"、标注进终稿(粒度修复后)、此句及之后继承。
+**收官批(2026-08-01,asr #82-#84)**:
+- **#82 L4b 跨轨统一**:仅三证据合并(同 verified identity 1↔1 / 同 manual 标注 / echo 抑制对 ≥2 且占比 ≥50%),名字冲突守卫,manual>verification>echo 贪心一人一次,echo 证据只用本次内存态诊断(严格跟开关),确定性排序。纯 centroid 相似永不合并。
+- **#84 L3.5 本场声纹传播**:手工标注(未注册名)→ 从 ring 取该段音频 seed **内存态** session 声纹(每名 ≤3 样本,清除即撤,停录即弃,不落盘不入库)→ 后续行先查永久库、未中查 session(0.65 provisional / 0.72+margin 转正)。
+- **#83 AEC**:会议 mic 换 **VoiceProcessingIO**(raw AudioUnit,系统 AEC,AGC 已关),`meeting.mic_aec` 默认开,任何失败回退 cpal;听写不动。回声=采集端(AEC)+转写端(抑制)双重防线。
+**M9 全部完成**。待实机:AEC 开关对比(外放 suppressed 数下降/会议室远场人声是否被削)、未注册人标一句后续自动出名、外放双轨同一人合并为一。
 
 ## 商用前置（beta → 付费之间必须做）
 
