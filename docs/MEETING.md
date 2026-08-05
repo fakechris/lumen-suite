@@ -114,3 +114,9 @@
 
 - 换掉 diar-rs 的 CC-BY-NC 分割模型：自训 MIT `microsoft/wavlm-base` 分割头，或把 pyannote 的 MIT segmentation 导成 ONNX。见 ADR-0001。
 - 复核 identity/embedding 存储的隐私与加密（可复用 lumen-context 的 ChaCha20+Keychain 封存模式）。
+
+### Stage M10：会议可观测 + 说话人体验(2026-08-05,asr #96/#95/#97)
+- **#96 离线处理可观测**：progress.rs 阶段枚举(分段/声纹/识别/纠正/清洗/认人/合并/纪要,双轨标记)+ `meeting-processing-progress` 事件(节流 ≥3%/≥1s/末项)+ 加权总进度(识别38/清洗22/纪要14…稳定分母)+ 详情页当前阶段中文名+每步%+总进度条。
+- **#95 说话人配色**：名字归一化 key→FNV 哈希→10 色调色板(深浅主题各一套,前景≥6:1),同视图去撞色;"我"固定 accent、未指定灰;live chip 名字色+色点、offline 头像环+名字色+左细条、参与者列表同源;颜色仅辅助(名字文字恒在)。
+- **#97 标注声纹扩散**：人工标注段复用其 diar cluster centroid 当种子→匹配未标注 cluster(0.75+margin0.08,比跨会议库更严)→整 cluster 归该名字;优先级 **manual > manual_spread > verification > diar**;门控 macOS+diarize、开关默认 true;复现用户场景测试(段1A/段2B,后续未标注 A 声音归 A)。
+**AEC(#83)默认已本地关闭**(config mic_aec=false)——VPIO 采集回归(finalize 0 秒),待根治:默认改关+空轨兜底+修 VPIO 采样。**待实机**:进度条推进、配色可读、标注扩散准确率。
