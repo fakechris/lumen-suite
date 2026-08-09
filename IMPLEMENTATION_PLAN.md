@@ -40,6 +40,14 @@
   （diar-rs 含 CC-BY-NC 模型，仅非商用 beta）；**仅 macOS**；**v1 只采本机麦克风，不做系统音频/loopback**；
   MVP 含核心链路 + 纪要 + 播放器 + 说话人注册。
 **Success Criteria**: 端到端：单 mic 连续录音 → diar 分说话人 → 分段转录 → 查看/改名 → 纪要 → 导出 Cut
-**子阶段**（见 docs/MEETING.md）：M1 数据骨架/存储v6 → M2 diar-rs 可嵌入+离线管线 → M3 连续录音 →
-  M4 会议库UI+播放器+纪要+导出 → M5 说话人注册
-**Status**: 计划就绪，待开工 M1
+**子阶段**（见 docs/MEETING.md）：M1…M10 均在 lumen-asr 产品仓推进；suite 侧提供 diar-rs /
+  asr-engine / models / transcript 契约，不收会议管线本身。
+**Status**: **In product (lumen-asr), advanced past MVP**（对照 MEETING.md，勿以此处旧文为准）：
+  - M1–M5 Complete（存储 v6、离线 diar 管线、连续录音、会议库 UI/纪要/导出、声纹注册）
+  - M6 Complete（实时逐字稿 + Paraformer 双层 + 崩溃恢复）
+  - M7–M8 Complete（会议检测、系统音频双轨、日历/挂断等体验）
+  - M9 Complete（流式说话人标注 L1–L4b、session voiceprints、AEC 路径）
+  - M10 Complete（可观测 + 说话人颜色 + annotation voiceprint spread，suite docs 06eda74）
+  - 另：headless `meeting process` CLI（asr #119）— mlx-whisper / short-turn merge / bilingual
+  **未抽进 suite**：会议管线、mlx-whisper worker、pyannote（cut）仍按 ADR-0001 双轨。
+  **商用前置仍开**：diar 分割模型 CC-BY-NC 替换；cut 迁 diar-rs 的 DER/enrollment 条件。
