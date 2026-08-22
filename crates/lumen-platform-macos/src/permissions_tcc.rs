@@ -4,7 +4,12 @@
 //! lumen-asr.) Implements the shared `lumen_platform::Permissions` trait.
 
 use crate::open_url;
+#[cfg(target_os = "macos")]
 use crate::permissions::screen_recording_state;
+#[cfg(not(target_os = "macos"))]
+fn screen_recording_state() -> PermissionState {
+    PermissionState::NotDetermined
+}
 use async_trait::async_trait;
 use lumen_platform::{PermissionState, PermissionStatus, Permissions, PlatformError};
 
