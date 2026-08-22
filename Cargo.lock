@@ -1284,6 +1284,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-audio"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "hound",
+ "parking_lot",
+ "same-file",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "lumen-context"
 version = "0.1.0"
 dependencies = [
