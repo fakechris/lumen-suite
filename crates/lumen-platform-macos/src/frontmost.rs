@@ -158,8 +158,13 @@ fn frontmost_via_windowlist() -> Option<(String, i32, Option<u64>)> {
         let count = core_foundation_sys::array::CFArrayGetCount(array);
         // System owners that appear at layer 0 but aren't real user-facing apps.
         const SYSTEM_OWNERS: &[&str] = &[
-            "Window Server", "Dock", "SystemUIServer", "ControlCenter",
-            "Notification Center", "Spotlight", "loginwindow",
+            "Window Server",
+            "Dock",
+            "SystemUIServer",
+            "ControlCenter",
+            "Notification Center",
+            "Spotlight",
+            "loginwindow",
         ];
         for i in 0..count {
             let dict = core_foundation_sys::array::CFArrayGetValueAtIndex(array, i)
@@ -237,9 +242,7 @@ unsafe fn cf_dict_number(
 /// Whether the window has a real (non-zero) bounds dict — filters out
 /// invisible overlays and system pseudo-windows.
 #[cfg(target_os = "macos")]
-unsafe fn cf_dict_bounds_present(
-    dict: core_foundation_sys::dictionary::CFDictionaryRef,
-) -> bool {
+unsafe fn cf_dict_bounds_present(dict: core_foundation_sys::dictionary::CFDictionaryRef) -> bool {
     use core_foundation::base::TCFType;
     use core_foundation_sys::dictionary::CFDictionaryGetValue;
     let k = core_foundation::string::CFString::new("kCGWindowBounds");
@@ -415,13 +418,11 @@ end tell
             .map(str::trim)
             .filter(|x| !x.is_empty())
             .map(|x| x.to_string());
-        let ls_category_type = bundle
-            .as_ref()
-            .and_then(|b| {
-                // Best-effort: locate app via mdfind (slow path; rare fallback).
-                let _ = b;
-                None
-            });
+        let ls_category_type = bundle.as_ref().and_then(|b| {
+            // Best-effort: locate app via mdfind (slow path; rare fallback).
+            let _ = b;
+            None
+        });
         Some(FrontmostApp {
             app_name: name.to_string(),
             bundle_id: bundle,

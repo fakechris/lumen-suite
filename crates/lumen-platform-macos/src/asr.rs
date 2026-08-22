@@ -65,11 +65,7 @@ impl AsrEngine for MacSpeechAsr {
         }
     }
 
-    async fn transcribe(
-        &self,
-        audio: &[u8],
-        locale: &str,
-    ) -> Result<AsrResult, PlatformError> {
+    async fn transcribe(&self, audio: &[u8], locale: &str) -> Result<AsrResult, PlatformError> {
         if audio.is_empty() {
             return Err(PlatformError::Message("empty audio".into()));
         }
@@ -81,7 +77,9 @@ impl AsrEngine for MacSpeechAsr {
             )));
         }
         if !self.is_supported() {
-            return Err(PlatformError::Unsupported("Speech ASR not available".into()));
+            return Err(PlatformError::Unsupported(
+                "Speech ASR not available".into(),
+            ));
         }
 
         let locale = locale.to_string();
@@ -113,8 +111,8 @@ fn transcribe_blocking(
         let tmp = write_temp_wav(audio)?;
         let path_c = CString::new(tmp.to_string_lossy().as_bytes())
             .map_err(|e| PlatformError::Message(format!("path: {e}")))?;
-        let locale_c = CString::new(locale)
-            .map_err(|e| PlatformError::Message(format!("locale: {e}")))?;
+        let locale_c =
+            CString::new(locale).map_err(|e| PlatformError::Message(format!("locale: {e}")))?;
 
         let mut out_text: *mut c_char = std::ptr::null_mut();
         let mut out_err: *mut c_char = std::ptr::null_mut();
@@ -150,7 +148,9 @@ fn transcribe_blocking(
             CODE_UNSUPPORTED => Err(PlatformError::Unsupported(
                 err.if_empty("speech not supported"),
             )),
-            _ => Err(PlatformError::Message(err.if_empty("speech recognition failed"))),
+            _ => Err(PlatformError::Message(
+                err.if_empty("speech recognition failed"),
+            )),
         }
     }
 }

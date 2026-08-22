@@ -61,9 +61,8 @@ fn list_displays_sync() -> Result<Vec<DisplayInfo>, PlatformError> {
     {
         use core_graphics::display::CGDisplay;
 
-        let ids = CGDisplay::active_displays().map_err(|e| {
-            PlatformError::Message(format!("CGGetActiveDisplayList failed: {e:?}"))
-        })?;
+        let ids = CGDisplay::active_displays()
+            .map_err(|e| PlatformError::Message(format!("CGGetActiveDisplayList failed: {e:?}")))?;
         let main_id = CGDisplay::main().id;
         let mut out = Vec::with_capacity(ids.len().max(1));
         if ids.is_empty() {
@@ -133,7 +132,9 @@ fn cg_image_for_display(_id: DisplayId) -> Result<(), PlatformError> {
 }
 
 #[cfg(target_os = "macos")]
-fn rgba_from_cg(image: &core_graphics::image::CGImage) -> Result<(Vec<u8>, u32, u32), PlatformError> {
+fn rgba_from_cg(
+    image: &core_graphics::image::CGImage,
+) -> Result<(Vec<u8>, u32, u32), PlatformError> {
     let width = image.width() as u32;
     let height = image.height() as u32;
     if width == 0 || height == 0 {

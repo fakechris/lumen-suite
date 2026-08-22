@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use lumen_platform::{AxHit, AxTreeSnapshot, AxTreeWalkConfig, PlatformError};
 
 use crate::ax::{
-    ax_point_attr, ax_size_attr, ax_string_attr, ensure_enhanced_ax_for_pid, AxError,
-    AxUIElementRef, ReleaseGuard, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementSetMessagingTimeout, _AXUIElementGetWindow,
+    ax_point_attr, ax_size_attr, ax_string_attr, ensure_enhanced_ax_for_pid,
+    AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementSetMessagingTimeout,
+    AxError, AxUIElementRef, ReleaseGuard, _AXUIElementGetWindow,
 };
 
 /// kAXErrorSuccess
@@ -99,7 +99,10 @@ impl lumen_platform::AxTreeWalker for MacAxTreeWalker {
 
 /// Walk the focused window of `pid`. Prefer [`walk_window`] when a capture-time
 /// `window_id` is available.
-pub fn walk_focused_window(pid: i32, config: &AxTreeWalkConfig) -> Result<AxTreeSnapshot, PlatformError> {
+pub fn walk_focused_window(
+    pid: i32,
+    config: &AxTreeWalkConfig,
+) -> Result<AxTreeSnapshot, PlatformError> {
     walk_window(pid, None, config)
 }
 
@@ -163,7 +166,8 @@ unsafe fn find_window_by_cg_id(app: AxUIElementRef, want: u32) -> Option<AxUIEle
 
     let wins_attr = CFString::new("AXWindows");
     let mut wins: core_foundation::base::CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(app, wins_attr.as_concrete_TypeRef(), &mut wins) != K_AX_SUCCESS
+    if AXUIElementCopyAttributeValue(app, wins_attr.as_concrete_TypeRef(), &mut wins)
+        != K_AX_SUCCESS
         || wins.is_null()
     {
         return None;
@@ -200,7 +204,8 @@ unsafe fn resolve_focused_window(app: AxUIElementRef) -> Option<AxUIElementRef> 
     }
     let wins_attr = CFString::new("AXWindows");
     let mut wins: core_foundation::base::CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(app, wins_attr.as_concrete_TypeRef(), &mut wins) != K_AX_SUCCESS
+    if AXUIElementCopyAttributeValue(app, wins_attr.as_concrete_TypeRef(), &mut wins)
+        != K_AX_SUCCESS
         || wins.is_null()
     {
         return None;
@@ -286,7 +291,12 @@ unsafe fn walk_window_inner(
 
     tracing::debug!(pid, "walk_inner: starting walk_element");
     walker.walk_element(window, 0);
-    tracing::debug!(pid, nodes = walker.node_count, text_len = walker.text.len(), "walk_inner: walk_element done");
+    tracing::debug!(
+        pid,
+        nodes = walker.node_count,
+        text_len = walker.text.len(),
+        "walk_inner: walk_element done"
+    );
 
     let walk_duration = start.elapsed();
     let content_hash = blake3_hash(&walker.text);
@@ -557,7 +567,12 @@ fn trim_text(mut text: String, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text;
     }
-    text.truncate(text.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(text.len()));
+    text.truncate(
+        text.char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len()),
+    );
     text.push_str("…[truncated]");
     text
 }
@@ -595,7 +610,10 @@ mod tests {
 
     #[test]
     fn percent_decode_handles_common_cases() {
-        assert_eq!(percent_decode("/Users/chris/my%20docs/x.txt"), "/Users/chris/my docs/x.txt");
+        assert_eq!(
+            percent_decode("/Users/chris/my%20docs/x.txt"),
+            "/Users/chris/my docs/x.txt"
+        );
         assert_eq!(percent_decode("/plain/path"), "/plain/path");
     }
 

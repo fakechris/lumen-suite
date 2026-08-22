@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 #[cfg(target_os = "macos")]
-use core_foundation::base::{TCFType, CFTypeRef};
+use core_foundation::base::{CFTypeRef, TCFType};
 #[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
 
@@ -46,8 +46,9 @@ impl Drop for ReleaseGuard {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
-    pub fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef)
-        -> bool;
+    pub fn AXIsProcessTrustedWithOptions(
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> bool;
     pub fn AXUIElementCreateSystemWide() -> AxUIElementRef;
     pub fn AXUIElementCopyAttributeValue(
         element: AxUIElementRef,
@@ -69,7 +70,11 @@ extern "C" {
     ) -> AxError;
     pub fn AXValueCreate(the_type: AxValueType, value_ptr: *const c_void) -> AxValueRef;
     pub fn AXValueGetType(value: AxValueRef) -> AxValueType;
-    pub fn AXValueGetValue(value: AxValueRef, the_type: AxValueType, value_ptr: *mut c_void) -> bool;
+    pub fn AXValueGetValue(
+        value: AxValueRef,
+        the_type: AxValueType,
+        value_ptr: *mut c_void,
+    ) -> bool;
     /// Set the messaging timeout for an AXUIElement. Bounds how long a single
     /// AX IPC call can block — without this, a hung app stalls the caller
     /// indefinitely. screenpipe applies 0.2s on every walk root.
@@ -103,7 +108,9 @@ pub unsafe fn ax_string_attr(element: AxUIElementRef, name: &str) -> Option<Stri
         core_foundation_sys::base::CFRelease(value);
         return None;
     }
-    let cf_str = core_foundation::string::CFString::wrap_under_create_rule(value as core_foundation::string::CFStringRef);
+    let cf_str = core_foundation::string::CFString::wrap_under_create_rule(
+        value as core_foundation::string::CFStringRef,
+    );
     Some(cf_str.to_string())
 }
 
@@ -268,7 +275,12 @@ pub fn ensure_enhanced_ax_for_pid(pid: i32) -> bool {
                 enhanced.as_concrete_TypeRef(),
                 on.as_concrete_TypeRef() as CFTypeRef,
             );
-            tracing::debug!(pid, err_manual = e1, err_enhanced = e2, "AX enhanced-mode poke");
+            tracing::debug!(
+                pid,
+                err_manual = e1,
+                err_enhanced = e2,
+                "AX enhanced-mode poke"
+            );
         }
         true
     }

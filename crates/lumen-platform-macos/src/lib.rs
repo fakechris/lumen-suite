@@ -2,55 +2,85 @@
 //!
 //! Observe capture and process enrichment — does **not** use cua-driver.
 //!
-//! The crate is empty off macOS. `lumen-platform-host` only pulls it into the
-//! dependency graph for macOS targets, so there is no reason to carry
-//! always-failing stubs — and pretending to build them hid the fact that they
-//! did not.
+//! The navi-native ports are macOS-only (gated below); `lumen-platform-host`
+//! only pulls this crate into the graph for macOS targets for those. The
+//! capability modules promoted from lumen-asr (system audio process tap,
+//! hotkey CGEvent tap, AUVoiceIO, power monitor/assertion) follow asr's
+//! "compile everywhere, gate at runtime" contract: they expose their full API
+//! surface on every platform and degrade to `Unsupported` where the capability
+//! is missing, so Windows product builds link against real types.
 
-#![cfg(target_os = "macos")]
-
+#[cfg(target_os = "macos")]
 mod asr;
+#[cfg(target_os = "macos")]
 pub mod ax;
-mod input_counter;
+#[cfg(target_os = "macos")]
 pub mod ax_tree;
+#[cfg(target_os = "macos")]
 mod capture;
+#[cfg(target_os = "macos")]
 mod clipboard;
-pub mod inject;
+#[cfg(target_os = "macos")]
 mod frontmost;
+#[cfg(target_os = "macos")]
 mod idle;
+#[cfg(target_os = "macos")]
+pub mod inject;
+#[cfg(target_os = "macos")]
+mod input_counter;
+#[cfg(target_os = "macos")]
 mod lock;
+#[cfg(target_os = "macos")]
 mod ocr;
-mod power;
+#[cfg(target_os = "macos")]
 mod permissions;
+#[cfg(target_os = "macos")]
+mod power;
+#[cfg(target_os = "macos")]
 mod selection;
 
+#[cfg(target_os = "macos")]
 pub use asr::MacSpeechAsr;
+#[cfg(target_os = "macos")]
 pub use ax_tree::MacAxTreeWalker;
+#[cfg(target_os = "macos")]
 pub use input_counter::{
     start_input_counter, tap_reenable_count, tap_should_reenable, InputCounterState, InputCounts,
 };
 /// Convenience wrappers matching the daemon's call sites.
+#[cfg(target_os = "macos")]
 pub fn input_snapshot(state: &InputCounterState) -> InputCounts {
     input_counter::snapshot(state)
 }
+#[cfg(target_os = "macos")]
 pub fn input_reset(state: &InputCounterState) {
     input_counter::reset(state);
 }
+#[cfg(target_os = "macos")]
 pub fn input_drain_hid(state: &InputCounterState) -> Vec<lumen_platform::ObserveHidEvent> {
     input_counter::drain_hid(state)
 }
+#[cfg(target_os = "macos")]
 pub use capture::{MacDisplays, MacScreenCapturer};
+#[cfg(target_os = "macos")]
 pub use clipboard::clipboard_grab_selection;
+#[cfg(target_os = "macos")]
 pub use frontmost::MacFrontmost;
+#[cfg(target_os = "macos")]
 pub use idle::MacIdle;
+#[cfg(target_os = "macos")]
 pub use lock::{is_screen_locked, MacScreenLock};
+pub use lumen_platform::normalize_selection;
+#[cfg(target_os = "macos")]
 pub use ocr::{default_ocr_languages, MacVisionOcr};
-pub use power::MacPower;
+#[cfg(target_os = "macos")]
 pub use permissions::{
     accessibility_permission_state, microphone_permission_state, request_microphone_access,
     request_screen_recording, screen_recording_access_granted, MacPermissions,
 };
-pub use lumen_platform::normalize_selection;
+#[cfg(target_os = "macos")]
+pub use power::MacPower;
+#[cfg(target_os = "macos")]
 pub use selection::{
     accessibility_trusted, focused_element_pid, focused_selection, maybe_selection, mouse_location,
     start_mouse_up_monitor, MouseUp, SelectionInfo,

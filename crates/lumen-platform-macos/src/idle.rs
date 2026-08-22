@@ -51,10 +51,7 @@ pub struct MacIdle;
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
     /// Look up a registry entry by full path, e.g. "IOService:/IOHIDSystem".
-    fn IORegistryEntryFromPath(
-        main_port: u32,
-        path: *const std::ffi::c_char,
-    ) -> u32;
+    fn IORegistryEntryFromPath(main_port: u32, path: *const std::ffi::c_char) -> u32;
     /// Create a CF property for a registry entry. Caller must CFRelease.
     fn IORegistryEntryCreateCFProperty(
         entry: u32,
@@ -93,12 +90,8 @@ fn idle_seconds_native() -> Option<f64> {
             return None;
         }
         let key = CFString::new("HIDIdleTime");
-        let prop = IORegistryEntryCreateCFProperty(
-            entry,
-            key.as_concrete_TypeRef(),
-            std::ptr::null(),
-            0,
-        );
+        let prop =
+            IORegistryEntryCreateCFProperty(entry, key.as_concrete_TypeRef(), std::ptr::null(), 0);
         IOObjectRelease(entry);
         if prop.is_null() {
             return None;

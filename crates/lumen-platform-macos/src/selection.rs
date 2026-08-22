@@ -8,18 +8,17 @@
 
 #[cfg(target_os = "macos")]
 use crate::ax::{
-    ax_string_attr, AxUIElementRef, AxValueRef, CFRange, K_AX_VALUE_TYPE_CF_RANGE,
-    K_AX_VALUE_TYPE_CGRECT, ReleaseGuard, AXUIElementCopyAttributeValue,
-    AXUIElementCopyParameterizedAttributeValue,
-    AXUIElementCreateSystemWide, AXUIElementGetPid, AXValueCreate,
-    AXValueGetValue, AXValueGetType, AXIsProcessTrustedWithOptions,
+    ax_string_attr, AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue,
+    AXUIElementCopyParameterizedAttributeValue, AXUIElementCreateSystemWide, AXUIElementGetPid,
+    AXValueCreate, AXValueGetType, AXValueGetValue, AxUIElementRef, AxValueRef, CFRange,
+    ReleaseGuard, K_AX_VALUE_TYPE_CF_RANGE, K_AX_VALUE_TYPE_CGRECT,
 };
 #[cfg(target_os = "macos")]
-use std::ffi::c_void;
-#[cfg(target_os = "macos")]
-use core_foundation::base::{TCFType, CFTypeRef};
+use core_foundation::base::{CFTypeRef, TCFType};
 #[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 
 pub use lumen_platform::{MouseUp, SelectionInfo};
 
@@ -95,11 +94,7 @@ pub fn focused_element_pid() -> Option<i32> {
 
 /// Whether a mouse-up could plausibly have produced a selection.
 /// `down_pos`/`up_pos` in global points; `click_state` 1 = single click.
-pub fn maybe_selection(
-    down_pos: Option<(f64, f64)>,
-    up_pos: (f64, f64),
-    click_state: i64,
-) -> bool {
+pub fn maybe_selection(down_pos: Option<(f64, f64)>, up_pos: (f64, f64), click_state: i64) -> bool {
     if click_state > 1 {
         return true; // double/triple click selects word/line
     }
@@ -227,7 +222,10 @@ unsafe fn selected_text_via_markers(element: AXUIElementRef) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    tracing::debug!(chars = text.chars().count(), "selection via AXTextMarkerRange");
+    tracing::debug!(
+        chars = text.chars().count(),
+        "selection via AXTextMarkerRange"
+    );
     Some(text)
 }
 
@@ -304,9 +302,8 @@ unsafe fn focused_selection_native() -> Option<SelectionInfo> {
     // (Safari web content among them) report focus on a container while the
     // selection lives on an ancestor/nearby element.
     for depth in 0..=3u8 {
-        let text = selected_text_of(current).or_else(|| unsafe {
-            selected_text_via_markers(current)
-        });
+        let text =
+            selected_text_of(current).or_else(|| unsafe { selected_text_via_markers(current) });
         if let Some(text) = text {
             let bounds = selection_bounds(current);
             drop(current_guard);
@@ -450,8 +447,7 @@ where
                                 maybe_selection: maybe_selection(down, (p.x, p.y), clicks),
                             });
                         }
-                        CGEventType::TapDisabledByTimeout
-                        | CGEventType::TapDisabledByUserInput => {
+                        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
                             if let Ok(guard) = tap_slot_cb.lock() {
                                 if let Some(port) = *guard {
                                     unsafe { CGEventTapEnable(port as *const c_void, true) };

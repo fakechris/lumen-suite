@@ -10,8 +10,8 @@
 //!    restored exactly as in the ⌘C selection fallback (`clipboard.rs`).
 
 use crate::ax::{
-    ax_string_attr, AxUIElementRef, ReleaseGuard, AXUIElementCopyAttributeValue,
-    AXUIElementCreateApplication, AXUIElementSetAttributeValue,
+    ax_string_attr, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    AXUIElementSetAttributeValue, AxUIElementRef, ReleaseGuard,
 };
 
 /// How the injected text combines with existing field content.
@@ -48,7 +48,13 @@ pub fn inject_text(pid: i32, text: &str, mode: InjectMode) -> Result<(), String>
 
 /// AX roles that accept text writes. Anything containing "secure" is refused
 /// before this check (password fields must never be written).
-const ALLOWED_ROLE_SUFFIXES: &[&str] = &["TextField", "TextArea", "SearchField", "WebArea", "ComboBox"];
+const ALLOWED_ROLE_SUFFIXES: &[&str] = &[
+    "TextField",
+    "TextArea",
+    "SearchField",
+    "WebArea",
+    "ComboBox",
+];
 
 #[cfg(target_os = "macos")]
 fn inject_via_ax(pid: i32, text: &str, mode: InjectMode) -> Result<(), String> {
@@ -65,11 +71,8 @@ fn inject_via_ax(pid: i32, text: &str, mode: InjectMode) -> Result<(), String> {
         let attr = CFString::new("AXFocusedUIElement");
         // The returned element is retained by us (copy rule) — guard it.
         let mut focused: core_foundation::base::CFTypeRef = std::ptr::null();
-        if AXUIElementCopyAttributeValue(
-            app,
-            attr.as_concrete_TypeRef(),
-            &mut focused as *mut _,
-        ) != 0
+        if AXUIElementCopyAttributeValue(app, attr.as_concrete_TypeRef(), &mut focused as *mut _)
+            != 0
             || focused.is_null()
         {
             return Err("目标应用没有可写入的文本控件".into());

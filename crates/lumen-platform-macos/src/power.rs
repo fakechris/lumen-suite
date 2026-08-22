@@ -127,9 +127,7 @@ unsafe fn scan_assertions() -> bool {
 /// both `AssertionType` (modern) and `AssertType` (legacy alias) keys — older
 /// macOS releases and some assertion creators use the short form.
 #[cfg(target_os = "macos")]
-unsafe fn assertion_type_blocks(
-    entry: core_foundation_sys::dictionary::CFDictionaryRef,
-) -> bool {
+unsafe fn assertion_type_blocks(entry: core_foundation_sys::dictionary::CFDictionaryRef) -> bool {
     // Try both known key names; whichever resolves gives the type string.
     lookup_assertion_type(entry, c"AssertionType".as_ptr())
         .or_else(|| lookup_assertion_type(entry, c"AssertType".as_ptr()))
@@ -144,11 +142,11 @@ unsafe fn lookup_assertion_type(
     entry: core_foundation_sys::dictionary::CFDictionaryRef,
     key_bytes: *const c_char,
 ) -> Option<bool> {
-    use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease, CFTypeRef, Boolean};
+    use core_foundation_sys::base::{kCFAllocatorDefault, Boolean, CFRelease, CFTypeRef};
     use core_foundation_sys::dictionary::CFDictionaryGetValueIfPresent;
     use core_foundation_sys::string::{
-        CFStringCreateWithCString, CFStringGetCString, CFStringGetCStringPtr, CFStringRef,
-        kCFStringEncodingUTF8,
+        kCFStringEncodingUTF8, CFStringCreateWithCString, CFStringGetCString,
+        CFStringGetCStringPtr, CFStringRef,
     };
 
     let cf_key = CFStringCreateWithCString(kCFAllocatorDefault, key_bytes, kCFStringEncodingUTF8);
