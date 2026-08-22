@@ -847,3 +847,9 @@ mod tests {
         assert_eq!(whisper_language_from_locale("en-US"), "en");
     }
 }
+
+mod mlx_whisper;
+pub use mlx_whisper::{
+    MlxWhisperAsr, MlxWhisperConfig, DEFAULT_MLX_WHISPER_MODEL,
+    PRODUCT_WORKER as MLX_WHISPER_WORKER,
+};

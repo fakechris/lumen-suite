@@ -1325,6 +1325,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-identity"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
 name = "lumen-models"
 version = "0.1.0"
 dependencies = [

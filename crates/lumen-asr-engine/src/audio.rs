@@ -130,7 +130,11 @@ pub fn prepare_for_asr(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 /// Decode a WAV blob and resample to 16 kHz mono for offline engines.
 pub fn prepare_for_offline_asr(audio: &[u8]) -> Result<DecodedPcm, AsrError> {
     let decoded = decode_wav_pcm_s16le(audio)?;
-    let samples = resample_linear(&decoded.samples, decoded.sample_rate, ASR_TARGET_SAMPLE_RATE);
+    let samples = resample_linear(
+        &decoded.samples,
+        decoded.sample_rate,
+        ASR_TARGET_SAMPLE_RATE,
+    );
     Ok(DecodedPcm {
         samples,
         sample_rate: ASR_TARGET_SAMPLE_RATE,

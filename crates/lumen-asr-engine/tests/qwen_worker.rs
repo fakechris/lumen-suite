@@ -28,8 +28,8 @@ fn env_config() -> Option<QwenAsrConfig> {
 #[tokio::test]
 #[ignore = "requires local Python + mlx + Qwen model (set LUMEN_QWEN_PYTHON / LUMEN_QWEN_MODEL_DIR)"]
 async fn qwen_worker_round_trip() {
-    let config = env_config()
-        .expect("set LUMEN_QWEN_PYTHON and LUMEN_QWEN_MODEL_DIR to run this test");
+    let config =
+        env_config().expect("set LUMEN_QWEN_PYTHON and LUMEN_QWEN_MODEL_DIR to run this test");
     let engine = QwenAsr::new(config);
 
     let samples: Vec<f32> = (0..16_000)
@@ -48,8 +48,8 @@ async fn qwen_worker_round_trip() {
 #[tokio::test]
 #[ignore = "requires local Python + mlx + Qwen model (set LUMEN_QWEN_PYTHON / LUMEN_QWEN_MODEL_DIR)"]
 async fn qwen_worker_is_reused_across_requests() {
-    let config = env_config()
-        .expect("set LUMEN_QWEN_PYTHON and LUMEN_QWEN_MODEL_DIR to run this test");
+    let config =
+        env_config().expect("set LUMEN_QWEN_PYTHON and LUMEN_QWEN_MODEL_DIR to run this test");
     let engine = QwenAsr::new(config);
     let samples = vec![0.0f32; 8_000];
 

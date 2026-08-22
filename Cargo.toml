@@ -9,6 +9,7 @@ default-members = [
   "crates/lumen-transcript",
   "crates/lumen-context",
   "crates/lumen-audio",
+  "crates/lumen-identity",
   "crates/lumen-platform",
   "crates/lumen-platform-cpal",
   "crates/lumen-platform-host",
@@ -42,6 +43,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 cpal = "0.15"
 parking_lot = "0.12"
 lumen-audio = { path = "crates/lumen-audio" }
+lumen-identity = { path = "crates/lumen-identity" }
 lumen-platform = { path = "crates/lumen-platform" }
 lumen-platform-cpal = { path = "crates/lumen-platform-cpal" }
 lumen-platform-host = { path = "crates/lumen-platform-host" }
