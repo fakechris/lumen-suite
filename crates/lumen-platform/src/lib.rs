@@ -42,6 +42,33 @@ impl PermissionStatus {
     pub fn can_record_mic(&self) -> bool {
         self.microphone == PermissionState::Granted
     }
+
+    /// Dictation-style recording readiness (`can_record_mic`, asr spelling).
+    pub fn can_record(&self) -> bool {
+        self.can_record_mic()
+    }
+
+    /// Full inject path requires accessibility on macOS.
+    pub fn can_inject(&self) -> bool {
+        self.accessibility == PermissionState::Granted
+    }
+
+    /// Product copy-only mode: mic yes, accessibility no.
+    pub fn copy_only_ok(&self) -> bool {
+        self.can_record() && !self.can_inject()
+    }
+}
+
+/// Interactive permission flow on top of [`PermissionProbe`]'s read-only
+/// status: fire the real TCC prompt when one is still available, and deep-link
+/// the exact System Settings pane when macOS refuses to re-prompt.
+#[async_trait]
+pub trait Permissions: Send + Sync {
+    async fn status(&self) -> Result<PermissionStatus, PlatformError>;
+    async fn request_microphone(&self) -> Result<PermissionState, PlatformError>;
+    /// Accessibility usually cannot be granted in-app; open System Settings.
+    async fn open_accessibility_settings(&self) -> Result<(), PlatformError>;
+    async fn open_microphone_settings(&self) -> Result<(), PlatformError>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,7 +313,11 @@ pub struct PcmChunk {
 }
 
 impl PcmChunk {
-    pub fn from_mono_i16(samples: Vec<i16>, sample_rate: u32, device_name: impl Into<String>) -> Self {
+    pub fn from_mono_i16(
+        samples: Vec<i16>,
+        sample_rate: u32,
+        device_name: impl Into<String>,
+    ) -> Self {
         let n = samples.len() as u64;
         let duration_ms = if sample_rate == 0 {
             0
@@ -388,11 +419,7 @@ pub trait AsrEngine: Send + Sync {
     fn is_supported(&self) -> bool;
 
     /// Transcribe a WAV (or other decodeable) audio blob.
-    async fn transcribe(
-        &self,
-        audio: &[u8],
-        locale: &str,
-    ) -> Result<AsrResult, PlatformError>;
+    async fn transcribe(&self, audio: &[u8], locale: &str) -> Result<AsrResult, PlatformError>;
 }
 
 /// Stub / unavailable ASR.
@@ -404,11 +431,7 @@ impl AsrEngine for NullAsr {
         false
     }
 
-    async fn transcribe(
-        &self,
-        _audio: &[u8],
-        _locale: &str,
-    ) -> Result<AsrResult, PlatformError> {
+    async fn transcribe(&self, _audio: &[u8], _locale: &str) -> Result<AsrResult, PlatformError> {
         Err(PlatformError::Unsupported("ASR not available".into()))
     }
 }
@@ -432,11 +455,7 @@ impl AsrEngine for StubAsr {
         true
     }
 
-    async fn transcribe(
-        &self,
-        audio: &[u8],
-        _locale: &str,
-    ) -> Result<AsrResult, PlatformError> {
+    async fn transcribe(&self, audio: &[u8], _locale: &str) -> Result<AsrResult, PlatformError> {
         if audio.is_empty() {
             return Err(PlatformError::Message("empty audio".into()));
         }
@@ -532,7 +551,9 @@ pub struct NullMic;
 
 impl MicCapturer for NullMic {
     fn open(&self, _cfg: MicOpenConfig) -> Result<MicStream, PlatformError> {
-        Err(PlatformError::Unsupported("microphone not available".into()))
+        Err(PlatformError::Unsupported(
+            "microphone not available".into(),
+        ))
     }
 }
 
@@ -842,7 +863,9 @@ mod tests {
         let h = 80;
         let a = vec![100u8; w * h];
         let mut b = vec![100u8; w * h];
-        for i in 0..20 { b[i] = 50; }
+        for i in 0..20 {
+            b[i] = 50;
+        }
         assert!(hamming64(dhash(&a, w, h), dhash(&b, w, h)) <= 5);
     }
 
@@ -850,8 +873,12 @@ mod tests {
     fn dhash_inverted_high_hamming() {
         let w = 90;
         let h = 80;
-        let a: Vec<u8> = (0..w * h).map(|i| if i % w < w / 2 { 200 } else { 50 }).collect();
-        let b: Vec<u8> = (0..w * h).map(|i| if i % w < w / 2 { 50 } else { 200 }).collect();
+        let a: Vec<u8> = (0..w * h)
+            .map(|i| if i % w < w / 2 { 200 } else { 50 })
+            .collect();
+        let b: Vec<u8> = (0..w * h)
+            .map(|i| if i % w < w / 2 { 50 } else { 200 })
+            .collect();
         assert!(hamming64(dhash(&a, w, h), dhash(&b, w, h)) >= 6);
     }
 

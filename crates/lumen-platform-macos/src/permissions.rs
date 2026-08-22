@@ -86,7 +86,7 @@ pub fn screen_recording_access_granted() -> bool {
     }
 }
 
-fn screen_recording_state() -> PermissionState {
+pub(crate) fn screen_recording_state() -> PermissionState {
     #[cfg(target_os = "macos")]
     {
         // CGPreflight returns whether the process may capture without prompting.

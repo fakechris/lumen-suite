@@ -108,3 +108,26 @@ pub use system_audio::{
 pub use voice_processing::{
     voice_processing_supported, VoiceInputSink, VoiceProcessingError, VoiceProcessingInput,
 };
+
+mod permissions_tcc;
+pub use permissions_tcc::{
+    ensure_accessibility_onboarding, is_accessibility_trusted, prompt_accessibility,
+    MacTccPermissions,
+};
+
+/// Open a System Settings / arbitrary x-apple URL via the `open` command.
+pub fn open_url(url: &str) -> Result<(), lumen_platform::PlatformError> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| lumen_platform::PlatformError::Message(e.to_string()))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err(lumen_platform::PlatformError::Message("not macOS".into()))
+    }
+}
