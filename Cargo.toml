@@ -3,7 +3,18 @@ resolver = "2"
 members = ["crates/*", "diar/crates/diar-rs"]
 # diar-rs is excluded from default builds: its build.rs needs a Python env
 # providing kaldi-native-fbank (see diar/README.md). Build with -p diar-rs.
-default-members = ["crates/lumen-models", "crates/lumen-asr-engine", "crates/lumen-transcript", "crates/lumen-context"]
+default-members = [
+  "crates/lumen-models",
+  "crates/lumen-asr-engine",
+  "crates/lumen-transcript",
+  "crates/lumen-context",
+  "crates/lumen-audio",
+  "crates/lumen-platform",
+  "crates/lumen-platform-cpal",
+  "crates/lumen-platform-host",
+  "crates/lumen-platform-macos",
+  "crates/lumen-platform-windows",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +35,18 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal", "net", "process", "io-util"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Added for the lumen-platform crates (promoted from lumen-navi, which had
+# grown them as product-local crates while lumen-asr maintained a parallel,
+# overlapping set).
+cpal = "0.15"
+parking_lot = "0.12"
+lumen-audio = { path = "crates/lumen-audio" }
+lumen-platform = { path = "crates/lumen-platform" }
+lumen-platform-cpal = { path = "crates/lumen-platform-cpal" }
+lumen-platform-host = { path = "crates/lumen-platform-host" }
+lumen-platform-macos = { path = "crates/lumen-platform-macos" }
+lumen-platform-windows = { path = "crates/lumen-platform-windows" }
 
 # Moved here from diar/crates/diar-rs (profiles only apply at workspace root).
 [profile.release]
