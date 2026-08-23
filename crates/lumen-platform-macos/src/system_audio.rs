@@ -208,6 +208,18 @@ impl Drop for SystemAudioCapture {
 }
 
 #[cfg(target_os = "macos")]
+
+/// Diagnostic: bundle ids of every HAL process object (what a tap can match).
+pub fn debug_process_bundle_ids() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        imp::debug_process_bundle_ids()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
 mod imp {
     use super::{SystemAudioError, SystemAudioSink, SystemAudioTarget};
     use std::ffi::{c_char, c_void};
@@ -538,6 +550,16 @@ mod imp {
     /// All handles are plain HAL object ids (thread-safe C API); the retained
     /// block is only invoked by Core Audio on `queue` and released via
     /// `AudioDeviceDestroyIOProcID`. Safe to move across threads.
+    /// Diagnostic: every HAL process object's bundle id. Reveals what a tap
+    /// target can actually match (e.g. whether a browser's audio helper is
+    /// known to the HAL and under which bundle id).
+    pub(super) fn debug_process_bundle_ids() -> Vec<String> {
+        process_object_ids()
+            .into_iter()
+            .filter_map(process_bundle_id)
+            .collect()
+    }
+
     pub(super) struct TapSession {
         tap: AudioObjectID,
         aggregate: AudioObjectID,
