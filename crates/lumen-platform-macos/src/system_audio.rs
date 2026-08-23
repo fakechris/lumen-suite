@@ -322,8 +322,6 @@ mod imp {
     const PROCESS_OBJECT_LIST: u32 = fourcc(b"prs#"); // kAudioHardwarePropertyProcessObjectList
     const PROCESS_BUNDLE_ID: u32 = fourcc(b"pbid"); // kAudioProcessPropertyBundleID
     const TAP_PROPERTY_FORMAT: u32 = fourcc(b"tfmt"); // kAudioTapPropertyFormat
-    const DEFAULT_OUTPUT_DEVICE: u32 = fourcc(b"dOut"); // kAudioHardwarePropertyDefaultOutputDevice
-    const DEVICE_UID: u32 = fourcc(b"uid "); // kAudioDevicePropertyDeviceUID
     const FORMAT_FLAG_IS_FLOAT: u32 = 1; // kAudioFormatFlagIsFloat
 
     // SAFETY: standard CoreAudio.framework HAL entry points that have existed
@@ -503,53 +501,6 @@ mod imp {
             .collect()
     }
 
-    /// The system default output device's UID. An aggregate containing only a
-    /// tap has no clock-bearing device, so the HAL creates it but never runs
-    /// IO cycles — everything succeeds and no callback ever fires. The tap
-    /// must therefore ride on the default output device (as a sub-device),
-    /// exactly like Apple's AudioCap sample: the output device provides the
-    /// clock, the tap contributes input streams, and the aggregate stays
-    /// private so nothing else can see or use it.
-    fn default_output_device_uid() -> Option<String> {
-        let a = addr(DEFAULT_OUTPUT_DEVICE);
-        let mut device: AudioObjectID = 0;
-        let mut io_size = std::mem::size_of::<AudioObjectID>() as u32;
-        // SAFETY: fixed-size scalar property read on the system object.
-        let status = unsafe {
-            AudioObjectGetPropertyData(
-                SYSTEM_OBJECT,
-                &a,
-                0,
-                std::ptr::null(),
-                &mut io_size,
-                &mut device as *mut AudioObjectID as *mut c_void,
-            )
-        };
-        if status != 0 || device == 0 {
-            return None;
-        }
-        let a = addr(DEVICE_UID);
-        let mut value: CFStringRef = std::ptr::null();
-        let mut size = std::mem::size_of::<CFStringRef>() as u32;
-        // SAFETY: fixed-size CFStringRef property read; ownership follows the
-        // create rule (released by CFString::wrap_under_create_rule below).
-        let status = unsafe {
-            AudioObjectGetPropertyData(
-                device,
-                &a,
-                0,
-                std::ptr::null(),
-                &mut size,
-                &mut value as *mut CFStringRef as *mut c_void,
-            )
-        };
-        if status != 0 || value.is_null() {
-            return None;
-        }
-        let value = unsafe { CFString::wrap_under_create_rule(value) };
-        Some(value.to_string())
-    }
-
     /// Stream format of the tap (mono mixdown → 1 channel Float32 at the
     /// system output rate).
     fn tap_stream_format(tap: AudioObjectID) -> Option<AudioStreamBasicDescription> {
@@ -613,27 +564,6 @@ mod imp {
                 let _: () = msg_send![&*desc, setProcessRestoreEnabled: Bool::YES];
             }
         }
-        // Set muteBehavior to unmuted (1). The default may be muted or
-        // mutedWhenTapped, which causes the tap to deliver silence even
-        // when successfully created. v2s and Apple's AudioCap sample both
-        // set this explicitly. CATapMuteBehavior: 0=muted, 1=unmuted,
-        // 2=mutedWhenTapped.
-        unsafe {
-            let selector = sel!(setMuteBehavior:);
-            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
-            if supported {
-                let _: () = msg_send![&*desc, setMuteBehavior: 1i64];
-            }
-        }
-        // Mark the tap private so it doesn't appear in other apps' device lists.
-        unsafe {
-            let selector = sel!(setPrivate:);
-            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
-            if supported {
-                let _: () = msg_send![&*desc, setPrivate: Bool::YES];
-            }
-        }
-
         // SAFETY: `UUID` / `UUIDString` are documented properties.
         let uuid_string: String = unsafe {
             let uuid: *mut AnyObject = msg_send![&*desc, UUID];
@@ -724,7 +654,7 @@ mod imp {
     }
 
     pub(super) fn debug_process_list() -> Vec<(u32, i32, String)> {
-        const PROCESS_PID: u32 = fourcc(b"pid ");
+        const PROCESS_PID: u32 = fourcc(b"ppid"); // kAudioProcessPropertyPID
         process_object_ids()
             .into_iter()
             .map(|object| {
@@ -830,34 +760,22 @@ mod imp {
             let channels = format.m_channels_per_frame.max(1) as usize;
             let sample_rate = format.m_sample_rate.round() as u32;
 
-            // 2. A private aggregate device riding on the default output
-            //    device: the output device is the clock-bearing main
-            //    sub-device (without one the HAL never runs IO cycles), the
-            //    tap contributes the input streams, and `private` keeps the
-            //    whole device invisible to other clients.
-            let output_uid = default_output_device_uid().ok_or_else(|| {
-                SystemAudioError::CoreAudio {
-                    stage: "kAudioHardwarePropertyDefaultOutputDevice",
-                    status: -1,
-                }
-            })?;
+            // 2. A private aggregate device that contains only the tap, so no
+            //    other audio client ever sees it.
+            //
+            //    The tap is itself the clock-bearing member: it is driven by
+            //    the tapped processes' output cycles. Adding the physical
+            //    default output device as a `subdevices`/`master` member (in
+            //    the belief that an aggregate needs a hardware clock) stops the
+            //    IO proc from ever firing, even though every call up to and
+            //    including AudioDeviceStart still returns noErr. Keep this
+            //    aggregate tap-only.
             let device_uid = format!("com.lumen.asr.systemaudio.{tap_uuid}");
-            let tap_entry = CFDictionary::from_CFType_pairs(&[
-                (
-                    CFString::from_static_string("uid").as_CFType(),
-                    CFString::new(&tap_uuid).as_CFType(),
-                ),
-                (
-                    CFString::from_static_string("drift").as_CFType(),
-                    CFNumber::from(1i32).as_CFType(),
-                ),
-            ]);
-            let taps = CFArray::from_CFTypes(&[tap_entry.as_CFType()]);
-            let subdevices = CFArray::from_CFTypes(&[CFDictionary::from_CFType_pairs(&[(
+            let tap_entry = CFDictionary::from_CFType_pairs(&[(
                 CFString::from_static_string("uid").as_CFType(),
-                CFString::new(&output_uid).as_CFType(),
-            )])
-            .as_CFType()]);
+                CFString::new(&tap_uuid).as_CFType(),
+            )]);
+            let taps = CFArray::from_CFTypes(&[tap_entry.as_CFType()]);
             let agg_desc: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[
                 (
                     CFString::from_static_string("uid"),
@@ -867,28 +785,9 @@ mod imp {
                     CFString::from_static_string("name"),
                     CFString::from_static_string("Lumen System Audio").as_CFType(),
                 ),
-                // `kAudioAggregateDeviceMainSubDeviceKey` is spelled "master"
-                // on the wire: Apple renamed the C constant Master -> Main but
-                // kept the dictionary key for binary compatibility. Passing
-                // "main" here is silently ignored by the HAL, which leaves the
-                // aggregate without a clock-bearing sub-device — it is created
-                // and started successfully but never runs an IO cycle, so the
-                // IO proc is never called and the tap looks silent.
-                (
-                    CFString::from_static_string("master"),
-                    CFString::new(&output_uid).as_CFType(),
-                ),
-                (
-                    CFString::from_static_string("subdevices"),
-                    subdevices.as_CFType(),
-                ),
                 (
                     CFString::from_static_string("private"),
                     CFNumber::from(1i32).as_CFType(),
-                ),
-                (
-                    CFString::from_static_string("stacked"),
-                    CFNumber::from(0i32).as_CFType(),
                 ),
                 (
                     CFString::from_static_string("tapautostart"),
