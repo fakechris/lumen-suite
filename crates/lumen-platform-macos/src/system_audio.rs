@@ -880,6 +880,10 @@ mod imp {
                     CFNumber::from(1i32).as_CFType(),
                 ),
                 (
+                    CFString::from_static_string("stacked"),
+                    CFNumber::from(0i32).as_CFType(),
+                ),
+                (
                     CFString::from_static_string("tapautostart"),
                     CFNumber::from(1i32).as_CFType(),
                 ),
