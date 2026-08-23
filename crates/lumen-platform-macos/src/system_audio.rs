@@ -867,8 +867,15 @@ mod imp {
                     CFString::from_static_string("name"),
                     CFString::from_static_string("Lumen System Audio").as_CFType(),
                 ),
+                // `kAudioAggregateDeviceMainSubDeviceKey` is spelled "master"
+                // on the wire: Apple renamed the C constant Master -> Main but
+                // kept the dictionary key for binary compatibility. Passing
+                // "main" here is silently ignored by the HAL, which leaves the
+                // aggregate without a clock-bearing sub-device — it is created
+                // and started successfully but never runs an IO cycle, so the
+                // IO proc is never called and the tap looks silent.
                 (
-                    CFString::from_static_string("main"),
+                    CFString::from_static_string("master"),
                     CFString::new(&output_uid).as_CFType(),
                 ),
                 (
