@@ -12,6 +12,15 @@ impl FrontmostAppProbe for MacFrontmost {
     }
 }
 
+/// Frontmost probe WITHOUT the tab-URL enrichment. The enrichment runs an
+/// AppleScript against the browser, which on first use triggers an Automation
+/// TCC prompt and can block for AppleScript's full default timeout (~2 min).
+/// Callers that only need "which app is in front" (e.g. an audio-tap target
+/// picker) must use this one.
+pub fn frontmost_app_basic() -> Option<FrontmostApp> {
+    frontmost_native().or_else(frontmost_osascript)
+}
+
 pub fn frontmost_app() -> Option<FrontmostApp> {
     frontmost_native()
         .or_else(frontmost_osascript)

@@ -65,7 +65,7 @@ pub use capture::{MacDisplays, MacScreenCapturer};
 #[cfg(target_os = "macos")]
 pub use clipboard::clipboard_grab_selection;
 #[cfg(target_os = "macos")]
-pub use frontmost::{frontmost_app, MacFrontmost};
+pub use frontmost::{frontmost_app, frontmost_app_basic, MacFrontmost};
 #[cfg(target_os = "macos")]
 pub use idle::MacIdle;
 #[cfg(target_os = "macos")]
