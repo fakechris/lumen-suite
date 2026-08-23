@@ -759,38 +759,24 @@ mod imp {
             let (create_tap, destroy_tap) = tap_fns().ok_or(SystemAudioError::Unsupported)?;
             let (desc, tap_uuid) = build_tap_description(target)?;
 
-            // 0. TCC kTCCServiceAudioCapture: on macOS 14.x the process tap
-            //    is created "successfully" (status 0) but delivers silence
-            //    when this permission has not been explicitly requested via
-            //    the private TCC framework (same pattern as Apple's AudioCap
-            //    sample). Preflight first; request only when undetermined.
-            match tcc_audio_capture_status() {
-                0 => {} // already granted
-                _ => {
-                    // Not granted (denied, undetermined, or framework
-                    // unavailable). Always try requesting — on first use
-                    // this shows the system prompt; if previously denied
-                    // in System Settings, the request returns false
-                    // immediately (user must re-enable there).
-                    match tcc_request_audio_capture(std::time::Duration::from_secs(30)) {
-                        Some(true) => {} // newly granted
-                        Some(false) => return Err(SystemAudioError::PermissionDenied),
-                        None => {
-                            // Framework unavailable (older macOS may not
-                            // gate this) or user did not respond in 30 s —
-                            // proceed best-effort; the caller's degrade
-                            // contract handles silence.
-                            tracing::warn!("TCC audio capture request unavailable or timed out; proceeding best-effort");
-                        }
-                    }
-                }
-            }
-
-            // 1. The process tap itself.
+            // 1. The process tap itself. On macOS 14.4+ this call triggers
+            //    the system's "System Audio Recording" TCC prompt
+            //    automatically (same behaviour as Apple's AudioCap sample and
+            //    the open-source v2s app — neither does an explicit
+            //    TCCAccessRequest). If the user denies, the call returns
+            //    permErr (-84). We do NOT preflight with the private TCC
+            //    framework: TCCAccessPreflight returns non-zero for "never
+            //    asked" states, which caused us to block tap creation before
+            //    the system prompt could ever appear.
             let mut tap: AudioObjectID = 0;
             // SAFETY: `desc` is a valid CATapDescription; out param is local.
             let status = unsafe { create_tap(Retained::as_ptr(&desc) as *mut AnyObject, &mut tap) };
             if status != 0 || tap == 0 {
+                // permErr (-84) = user denied system-audio recording.
+                const PERM_ERR: OSStatus = -84;
+                if status == PERM_ERR {
+                    return Err(SystemAudioError::PermissionDenied);
+                }
                 return Err(SystemAudioError::CoreAudio {
                     stage: "AudioHardwareCreateProcessTap",
                     status,
