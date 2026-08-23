@@ -43,8 +43,8 @@ pub enum SystemAudioError {
     #[error("system audio capture already running")]
     AlreadyRunning,
     /// None of the configured bundle ids currently has a Core Audio process
-    /// object, so there is no safe per-process target to capture.
-    #[error("no running audio process matched configured targets: {bundle_ids:?}")]
+    /// object producing output, so there is no safe per-process target to capture.
+    #[error("target app is not producing audio; start playback and retry: {bundle_ids:?}")]
     NoMatchingProcesses { bundle_ids: Vec<String> },
     /// A Core Audio call failed (includes a denied TCC permission surfacing as
     /// a tap/aggregate creation error).
@@ -321,6 +321,7 @@ mod imp {
     const TRANSLATE_PID_TO_PROCESS_OBJECT: u32 = fourcc(b"id2p"); // kAudioHardwarePropertyTranslatePIDToProcessObject
     const PROCESS_OBJECT_LIST: u32 = fourcc(b"prs#"); // kAudioHardwarePropertyProcessObjectList
     const PROCESS_BUNDLE_ID: u32 = fourcc(b"pbid"); // kAudioProcessPropertyBundleID
+    const PROCESS_IS_RUNNING_OUTPUT: u32 = fourcc(b"piro"); // kAudioProcessPropertyIsRunningOutput
     const TAP_PROPERTY_FORMAT: u32 = fourcc(b"tfmt"); // kAudioTapPropertyFormat
     const FORMAT_FLAG_IS_FLOAT: u32 = 1; // kAudioFormatFlagIsFloat
 
@@ -410,84 +411,6 @@ mod imp {
         }
     }
 
-    /// TEMPORARY: append a line to /tmp/lumen-tap.log. The tap chain reports
-    /// success at every step even when it delivers nothing, and the desktop
-    /// apps have no console, so the only way to tell "IO proc never fired"
-    /// apart from "IO proc fired with an empty buffer list" is to record it.
-    fn tap_diag(msg: &str) {
-        use std::io::Write;
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/lumen-tap.log")
-            .and_then(|mut f| writeln!(f, "{msg}"));
-    }
-
-    /// Number of channels the device reports on its input scope, i.e. what the
-    /// tap actually contributes to the aggregate.
-    fn input_channel_count(device: AudioObjectID) -> i32 {
-        const STREAM_CONFIGURATION: u32 = fourcc(b"slay"); // kAudioDevicePropertyStreamConfiguration
-        const SCOPE_INPUT: u32 = fourcc(b"inpt"); // kAudioObjectPropertyScopeInput
-        let a = AudioObjectPropertyAddress {
-            m_selector: STREAM_CONFIGURATION,
-            m_scope: SCOPE_INPUT,
-            m_element: ELEMENT_MAIN,
-        };
-        let mut size: u32 = 0;
-        // SAFETY: size query with a null buffer is the documented usage.
-        if unsafe { AudioObjectGetPropertyDataSize(device, &a, 0, std::ptr::null(), &mut size) } != 0
-            || size == 0
-        {
-            return -1;
-        }
-        let mut buf = vec![0u8; size as usize];
-        // SAFETY: buffer is sized by the query above.
-        if unsafe {
-            AudioObjectGetPropertyData(
-                device,
-                &a,
-                0,
-                std::ptr::null(),
-                &mut size,
-                buf.as_mut_ptr() as *mut c_void,
-            )
-        } != 0
-        {
-            return -1;
-        }
-        // SAFETY: the property returns an AudioBufferList.
-        unsafe {
-            let list = &*(buf.as_ptr() as *const AudioBufferList);
-            let buffers =
-                std::slice::from_raw_parts(list.m_buffers.as_ptr(), list.m_number_buffers as usize);
-            buffers.iter().map(|b| b.m_number_channels as i32).sum()
-        }
-    }
-
-    /// Whether the HAL currently runs IO cycles on the device.
-    fn device_is_running(device: AudioObjectID) -> i32 {
-        const DEVICE_IS_RUNNING: u32 = fourcc(b"goin"); // kAudioDevicePropertyDeviceIsRunning
-        let a = addr(DEVICE_IS_RUNNING);
-        let mut value: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        // SAFETY: fixed-size scalar property read on a HAL device object.
-        let status = unsafe {
-            AudioObjectGetPropertyData(
-                device,
-                &a,
-                0,
-                std::ptr::null(),
-                &mut size,
-                &mut value as *mut u32 as *mut c_void,
-            )
-        };
-        if status != 0 {
-            -1
-        } else {
-            value as i32
-        }
-    }
-
     /// Core Audio process object for `pid`, so the tap can exclude this
     /// process's own output. `None` when the process plays no audio / is
     /// unknown to the HAL — then nothing needs excluding.
@@ -558,6 +481,37 @@ mod imp {
         Some(value.to_string())
     }
 
+    fn process_is_running_output(object: AudioObjectID) -> bool {
+        let a = addr(PROCESS_IS_RUNNING_OUTPUT);
+        let mut value = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                object,
+                &a,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut value as *mut u32 as *mut c_void,
+            )
+        };
+        status == 0 && value != 0
+    }
+
+    fn process_matches_target(
+        bundle_id: Option<&str>,
+        is_running_output: bool,
+        wanted: &[String],
+    ) -> bool {
+        is_running_output
+            && bundle_id.is_some_and(|bundle_id| {
+                let bundle_id = super::normalize_bundle_id(bundle_id);
+                wanted
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&bundle_id))
+            })
+    }
+
     fn matching_process_objects(target: &SystemAudioTarget) -> Vec<AudioObjectID> {
         let own_process = process_object_for_pid(std::process::id() as i32);
         let wanted: Vec<String> = target
@@ -569,12 +523,12 @@ mod imp {
             .into_iter()
             .filter(|object| Some(*object) != own_process)
             .filter(|object| {
-                process_bundle_id(*object).is_some_and(|bundle_id| {
-                    let bundle_id = super::normalize_bundle_id(&bundle_id);
-                    wanted
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(&bundle_id))
-                })
+                let bundle_id = process_bundle_id(*object);
+                process_matches_target(
+                    bundle_id.as_deref(),
+                    process_is_running_output(*object),
+                    &wanted,
+                )
             })
             .collect()
     }
@@ -890,47 +844,12 @@ mod imp {
             // 3. IO proc reading the tapped input. The block copies each
             //    callback's samples out (down-mixing if the tap ever reports
             //    more than one channel) and forwards them to the sink.
-            let io_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let io_calls_block = Arc::clone(&io_calls);
             let io_block = RcBlock::new(
                 move |_now: *mut c_void,
                       input: *mut c_void,
                       _input_time: *mut c_void,
                       _output: *mut c_void,
                       _output_time: *mut c_void| {
-                    // TEMPORARY diagnostics, capped at 10 invocations so the
-                    // realtime callback never keeps doing file IO.
-                    let call = io_calls_block.fetch_add(1, Ordering::Relaxed);
-                    if call < 10 {
-                        if input.is_null() {
-                            tap_diag(&format!("io_proc #{call}: input list is NULL"));
-                        } else {
-                            // SAFETY: non-null input is an AudioBufferList.
-                            let list = unsafe { &*(input as *const AudioBufferList) };
-                            let buffers = unsafe {
-                                std::slice::from_raw_parts(
-                                    list.m_buffers.as_ptr(),
-                                    list.m_number_buffers as usize,
-                                )
-                            };
-                            let detail: Vec<String> = buffers
-                                .iter()
-                                .map(|b| {
-                                    format!(
-                                        "ch={} bytes={} data={}",
-                                        b.m_number_channels,
-                                        b.m_data_byte_size,
-                                        if b.m_data.is_null() { "NULL" } else { "ok" }
-                                    )
-                                })
-                                .collect();
-                            tap_diag(&format!(
-                                "io_proc #{call}: buffers={} [{}]",
-                                list.m_number_buffers,
-                                detail.join("; ")
-                            ));
-                        }
-                    }
                     // The raw block ABI carries untyped pointers; `input` is
                     // the device's input AudioBufferList (the tap stream).
                     let input = input as *const AudioBufferList;
@@ -1011,29 +930,6 @@ mod imp {
                 return Err(fail("AudioDeviceStart", status, tap, Some(aggregate)));
             }
 
-            tap_diag(&format!(
-                "started: targets={:?} tap={tap} aggregate={aggregate} rate={sample_rate} tap_channels={channels} \
-                 agg_input_channels={} agg_is_running={}",
-                target.bundle_ids(),
-                input_channel_count(aggregate),
-                device_is_running(aggregate),
-            ));
-            // Re-read after a beat: tapautostart means the HAL may only spin up
-            // the IO cycle once the tapped process next writes audio.
-            {
-                let aggregate = aggregate;
-                let io_calls = Arc::clone(&io_calls);
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    tap_diag(&format!(
-                        "after 3s: agg_is_running={} agg_input_channels={} io_proc_calls={}",
-                        device_is_running(aggregate),
-                        input_channel_count(aggregate),
-                        io_calls.load(Ordering::Relaxed)
-                    ));
-                });
-            }
-
             tracing::info!(
                 sample_rate,
                 channels,
@@ -1075,6 +971,32 @@ mod imp {
                 dispatch_release(self.queue);
             }
             tracing::info!("system audio tap capture stopped");
+        }
+    }
+
+    #[cfg(test)]
+    mod process_selection_tests {
+        use super::process_matches_target;
+
+        #[test]
+        fn only_running_output_processes_match_a_target_bundle() {
+            let wanted = vec!["ai.perplexity.comet".to_string()];
+
+            assert!(process_matches_target(
+                Some("ai.perplexity.comet.helper"),
+                true,
+                &wanted,
+            ));
+            assert!(!process_matches_target(
+                Some("ai.perplexity.comet.helper"),
+                false,
+                &wanted,
+            ));
+            assert!(!process_matches_target(
+                Some("com.example.other"),
+                true,
+                &wanted,
+            ));
         }
     }
 }
