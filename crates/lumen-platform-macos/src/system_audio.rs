@@ -53,6 +53,11 @@ pub enum SystemAudioError {
     /// The Objective-C tap description could not be built.
     #[error("tap description error: {0}")]
     TapDescription(String),
+    /// The user denied or did not grant the `kTCCServiceAudioCapture` TCC
+    /// permission. The process tap is created "successfully" but delivers
+    /// silence without this permission on macOS 14.x.
+    #[error("system audio capture permission not granted — allow in System Settings → Privacy → System Audio Recording")]
+    PermissionDenied,
 }
 
 /// Sink invoked from the capture callback with each mono `f32` chunk at the
@@ -209,6 +214,32 @@ impl Drop for SystemAudioCapture {
 
 #[cfg(target_os = "macos")]
 
+/// TCC kTCCServiceAudioCapture preflight: 0 = granted, 1 = denied,
+/// negative = undetermined/unavailable. The process tap silently delivers
+/// silence while this is not granted.
+pub fn tcc_audio_capture_status() -> i32 {
+    #[cfg(target_os = "macos")]
+    {
+        imp::tcc_audio_capture_status()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        -2
+    }
+}
+
+/// Show the system-audio TCC prompt and wait for the answer.
+pub fn tcc_request_audio_capture(timeout: std::time::Duration) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        imp::tcc_request_audio_capture(timeout)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Diagnostic: every HAL process object as (object id, pid, bundle id).
 pub fn debug_process_list() -> Vec<(u32, i32, String)> {
     #[cfg(target_os = "macos")]
@@ -223,6 +254,8 @@ pub fn debug_process_list() -> Vec<(u32, i32, String)> {
 mod imp {
     use super::{SystemAudioError, SystemAudioSink, SystemAudioTarget};
     use std::ffi::{c_char, c_void};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use block2::{Block, RcBlock};
     use core_foundation::array::CFArray;
@@ -334,6 +367,7 @@ mod imp {
 
     // libSystem: runtime symbol resolution + a serial queue for the IO block.
     extern "C" {
+        fn dlopen(path: *const c_char, mode: i32) -> *mut c_void;
         fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
         fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut c_void;
         fn dispatch_release(object: *mut c_void);
@@ -602,6 +636,73 @@ mod imp {
     /// Diagnostic: every HAL process object's bundle id. Reveals what a tap
     /// target can actually match (e.g. whether a browser's audio helper is
     /// known to the HAL and under which bundle id).
+    /// TCC SPI (private framework, same one Apple's AudioCap sample uses):
+    /// without an explicit `TCCAccessRequest` for kTCCServiceAudioCapture the
+    /// process tap is created "successfully" but delivers silence on 14.x.
+    pub(super) fn tcc_audio_capture_status() -> i32 {
+        unsafe {
+            let path = c"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC";
+            const RTLD_LAZY: i32 = 1;
+            let handle = dlopen(path.as_ptr(), RTLD_LAZY);
+            if handle.is_null() {
+                return -2; // TCC framework unavailable
+            }
+            let sym = dlsym(handle, c"TCCAccessPreflight".as_ptr());
+            if sym.is_null() {
+                return -2;
+            }
+            let preflight: unsafe extern "C" fn(*const c_void, *const c_void) -> i32 =
+                std::mem::transmute(sym);
+            let service = CFString::new("kTCCServiceAudioCapture");
+            preflight(
+                service.as_concrete_TypeRef() as *const c_void,
+                std::ptr::null(),
+            )
+        }
+    }
+
+    /// Request kTCCServiceAudioCapture (shows the system prompt). Returns
+    /// Some(granted) once answered within `timeout`, None on timeout/failure.
+    pub(super) fn tcc_request_audio_capture(timeout: std::time::Duration) -> Option<bool> {
+        unsafe {
+            let path = c"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC";
+            const RTLD_LAZY: i32 = 1;
+            let handle = dlopen(path.as_ptr(), RTLD_LAZY);
+            if handle.is_null() {
+                return None;
+            }
+            let sym = dlsym(handle, c"TCCAccessRequest".as_ptr());
+            if sym.is_null() {
+                return None;
+            }
+            let request: unsafe extern "C" fn(
+                *const c_void,
+                *const c_void,
+                *mut c_void,
+            ) = std::mem::transmute(sym);
+            let service = CFString::new("kTCCServiceAudioCapture");
+            let answered = Arc::new(std::sync::atomic::AtomicI32::new(-1));
+            let answered_block = Arc::clone(&answered);
+            let block = RcBlock::new(move |granted: Bool| {
+                answered_block.store(if granted.as_bool() { 1 } else { 0 }, Ordering::SeqCst);
+            });
+            request(
+                service.as_concrete_TypeRef() as *const c_void,
+                std::ptr::null(),
+                &*block as *const _ as *mut c_void,
+            );
+            let deadline = std::time::Instant::now() + timeout;
+            while std::time::Instant::now() < deadline {
+                let state = answered.load(Ordering::SeqCst);
+                if state >= 0 {
+                    return Some(state == 1);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            None
+        }
+    }
+
     pub(super) fn debug_process_list() -> Vec<(u32, i32, String)> {
         const PROCESS_PID: u32 = fourcc(b"pid ");
         process_object_ids()
@@ -658,8 +759,31 @@ mod imp {
             let (create_tap, destroy_tap) = tap_fns().ok_or(SystemAudioError::Unsupported)?;
             let (desc, tap_uuid) = build_tap_description(target)?;
 
-            // 1. The process tap itself. This is the step that trips the TCC
-            //    system-audio prompt; a denial surfaces as a non-zero status.
+            // 0. TCC kTCCServiceAudioCapture: on macOS 14.x the process tap
+            //    is created "successfully" (status 0) but delivers silence
+            //    when this permission has not been explicitly requested via
+            //    the private TCC framework (same pattern as Apple's AudioCap
+            //    sample). Preflight first; request only when undetermined.
+            match tcc_audio_capture_status() {
+                0 => {} // already granted
+                1 => return Err(SystemAudioError::PermissionDenied),
+                _ => {
+                    // Undetermined or TCC framework unavailable.
+                    match tcc_request_audio_capture(std::time::Duration::from_secs(30)) {
+                        Some(true) => {} // newly granted
+                        Some(false) => return Err(SystemAudioError::PermissionDenied),
+                        None => {
+                            // Framework unavailable (older macOS may not
+                            // gate this) or user did not respond in 30 s —
+                            // proceed best-effort; the caller's degrade
+                            // contract handles silence.
+                            tracing::warn!("TCC audio capture request unavailable or timed out; proceeding best-effort");
+                        }
+                    }
+                }
+            }
+
+            // 1. The process tap itself.
             let mut tap: AudioObjectID = 0;
             // SAFETY: `desc` is a valid CATapDescription; out param is local.
             let status = unsafe { create_tap(Retained::as_ptr(&desc) as *mut AnyObject, &mut tap) };
