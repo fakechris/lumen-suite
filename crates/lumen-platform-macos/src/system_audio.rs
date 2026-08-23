@@ -209,11 +209,11 @@ impl Drop for SystemAudioCapture {
 
 #[cfg(target_os = "macos")]
 
-/// Diagnostic: bundle ids of every HAL process object (what a tap can match).
-pub fn debug_process_bundle_ids() -> Vec<String> {
+/// Diagnostic: every HAL process object as (object id, pid, bundle id).
+pub fn debug_process_list() -> Vec<(u32, i32, String)> {
     #[cfg(target_os = "macos")]
     {
-        imp::debug_process_bundle_ids()
+        imp::debug_process_list()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -602,10 +602,30 @@ mod imp {
     /// Diagnostic: every HAL process object's bundle id. Reveals what a tap
     /// target can actually match (e.g. whether a browser's audio helper is
     /// known to the HAL and under which bundle id).
-    pub(super) fn debug_process_bundle_ids() -> Vec<String> {
+    pub(super) fn debug_process_list() -> Vec<(u32, i32, String)> {
+        const PROCESS_PID: u32 = fourcc(b"pid ");
         process_object_ids()
             .into_iter()
-            .filter_map(process_bundle_id)
+            .map(|object| {
+                let mut pid: i32 = 0;
+                let a = addr(PROCESS_PID);
+                let mut io_size = std::mem::size_of::<i32>() as u32;
+                // SAFETY: fixed-size scalar property read on a HAL process object.
+                let status = unsafe {
+                    AudioObjectGetPropertyData(
+                        object,
+                        &a,
+                        0,
+                        std::ptr::null(),
+                        &mut io_size,
+                        &mut pid as *mut i32 as *mut c_void,
+                    )
+                };
+                if status != 0 {
+                    pid = -1;
+                }
+                (object, pid, process_bundle_id(object).unwrap_or_default())
+            })
             .collect()
     }
 
