@@ -766,9 +766,12 @@ mod imp {
             //    sample). Preflight first; request only when undetermined.
             match tcc_audio_capture_status() {
                 0 => {} // already granted
-                1 => return Err(SystemAudioError::PermissionDenied),
                 _ => {
-                    // Undetermined or TCC framework unavailable.
+                    // Not granted (denied, undetermined, or framework
+                    // unavailable). Always try requesting — on first use
+                    // this shows the system prompt; if previously denied
+                    // in System Settings, the request returns false
+                    // immediately (user must re-enable there).
                     match tcc_request_audio_capture(std::time::Duration::from_secs(30)) {
                         Some(true) => {} // newly granted
                         Some(false) => return Err(SystemAudioError::PermissionDenied),
