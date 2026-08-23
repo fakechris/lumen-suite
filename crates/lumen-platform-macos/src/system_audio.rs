@@ -613,6 +613,26 @@ mod imp {
                 let _: () = msg_send![&*desc, setProcessRestoreEnabled: Bool::YES];
             }
         }
+        // Set muteBehavior to unmuted (1). The default may be muted or
+        // mutedWhenTapped, which causes the tap to deliver silence even
+        // when successfully created. v2s and Apple's AudioCap sample both
+        // set this explicitly. CATapMuteBehavior: 0=muted, 1=unmuted,
+        // 2=mutedWhenTapped.
+        unsafe {
+            let selector = sel!(setMuteBehavior:);
+            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
+            if supported {
+                let _: () = msg_send![&*desc, setMuteBehavior: 1i64];
+            }
+        }
+        // Mark the tap private so it doesn't appear in other apps' device lists.
+        unsafe {
+            let selector = sel!(setPrivate:);
+            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
+            if supported {
+                let _: () = msg_send![&*desc, setPrivate: Bool::YES];
+            }
+        }
 
         // SAFETY: `UUID` / `UUIDString` are documented properties.
         let uuid_string: String = unsafe {
