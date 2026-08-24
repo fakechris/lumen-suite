@@ -114,8 +114,10 @@ impl SystemAudioTarget {
     }
 
     /// Capture every process that produces system output, including processes
-    /// that start playing after the tap is created. The capture process itself
-    /// is excluded by the macOS implementation.
+    /// that start playing after the tap is created. The macOS implementation
+    /// excludes the capture process when Core Audio already has an object for
+    /// it. A caller whose process has never produced audio has no object to
+    /// exclude and must remain silent while this target is active.
     pub fn all_system_audio() -> Self {
         Self {
             bundle_ids: Vec::new(),
@@ -584,13 +586,17 @@ mod imp {
         // 14.2+. A global tap is created even when no process is currently
         // playing and automatically includes processes that start later. The
         // current process is excluded whenever Core Audio exposes an object
-        // for it, preventing future app-owned sounds from feeding captions.
+        // for it. A process that has never produced audio has no HAL object;
+        // requiring one here would make a silent capture app unable to start.
         let desc: Retained<AnyObject> = if target.captures_all_system_audio() {
+            let own_process = process_object_for_pid(std::process::id() as i32);
+            if own_process.is_none() {
+                tracing::warn!(
+                    "capture process has no Core Audio object; global tap requires the caller to remain silent"
+                );
+            }
             let excluded: Vec<Retained<NSNumber>> =
-                process_object_for_pid(std::process::id() as i32)
-                    .into_iter()
-                    .map(NSNumber::new_u32)
-                    .collect();
+                own_process.into_iter().map(NSNumber::new_u32).collect();
             let exclude_array = NSArray::from_retained_slice(&excluded);
             unsafe {
                 let allocated: *mut AnyObject = msg_send![class, alloc];
