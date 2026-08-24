@@ -4,10 +4,11 @@
 //! Dual-track meeting recording needs the *other* side of a call — the remote
 //! participants' voices — which never pass through the microphone. On macOS
 //! 14.2+ Core Audio can tap selected process objects. This module resolves an
-//! explicit bundle-id allow-list to live process objects, creates a mono
-//! mixdown tap for only those processes, wraps it in a private aggregate
-//! device, and reads the tapped samples with a device IO proc. It never falls
-//! back to a global system mix: an unmatched target degrades to mic-only.
+//! explicit bundle-id allow-list to live process objects or, when the caller
+//! explicitly requests it, creates a global mono tap excluding this process.
+//! The tap is wrapped in a private aggregate device and read with a device IO
+//! proc. App-scoped callers never fall back to a global system mix: an
+//! unmatched explicit target still degrades to mic-only.
 //!
 //! ## Capability gate (macOS 14.2+ only)
 //! The tap entry points (`AudioHardwareCreateProcessTap`, …) and the
@@ -56,7 +57,9 @@ pub enum SystemAudioError {
     /// The user denied or did not grant the `kTCCServiceAudioCapture` TCC
     /// permission. The process tap is created "successfully" but delivers
     /// silence without this permission on macOS 14.x.
-    #[error("system audio capture permission not granted — allow in System Settings → Privacy → System Audio Recording")]
+    #[error(
+        "system audio capture permission not granted — allow in System Settings → Privacy → System Audio Recording"
+    )]
     PermissionDenied,
 }
 
@@ -81,12 +84,13 @@ fn normalize_bundle_id(bundle_id: &str) -> String {
     trimmed.to_string()
 }
 
-/// Explicit process-level selection for a system-audio tap. Bundle ids are
-/// normalized and deduplicated; they come from the runtime app catalog rather
-/// than a compiled application list.
+/// Capture scope for a system-audio tap. Explicit bundle ids are normalized
+/// and deduplicated; [`all_system_audio`](Self::all_system_audio) is an
+/// intentional broader scope and is never selected as an implicit fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemAudioTarget {
     bundle_ids: Vec<String>,
+    captures_all_system_audio: bool,
 }
 
 impl SystemAudioTarget {
@@ -105,6 +109,17 @@ impl SystemAudioTarget {
         }
         Self {
             bundle_ids: normalized,
+            captures_all_system_audio: false,
+        }
+    }
+
+    /// Capture every process that produces system output, including processes
+    /// that start playing after the tap is created. The capture process itself
+    /// is excluded by the macOS implementation.
+    pub fn all_system_audio() -> Self {
+        Self {
+            bundle_ids: Vec::new(),
+            captures_all_system_audio: true,
         }
     }
 
@@ -113,7 +128,11 @@ impl SystemAudioTarget {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bundle_ids.is_empty()
+        !self.captures_all_system_audio && self.bundle_ids.is_empty()
+    }
+
+    pub fn captures_all_system_audio(&self) -> bool {
+        self.captures_all_system_audio
     }
 }
 
@@ -254,8 +273,8 @@ pub fn debug_process_list() -> Vec<(u32, i32, String)> {
 mod imp {
     use super::{SystemAudioError, SystemAudioSink, SystemAudioTarget};
     use std::ffi::{c_char, c_void};
-    use std::sync::Arc;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     use block2::{Block, RcBlock};
     use core_foundation::array::CFArray;
@@ -505,10 +524,10 @@ mod imp {
     ) -> bool {
         is_running_output
             && bundle_id.is_some_and(|bundle_id| {
-                let bundle_id = super::normalize_bundle_id(bundle_id);
+                let normalized = super::normalize_bundle_id(bundle_id);
                 wanted
                     .iter()
-                    .any(|candidate| candidate.eq_ignore_ascii_case(&bundle_id))
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&normalized))
             })
     }
 
@@ -561,30 +580,54 @@ mod imp {
     ) -> Result<(Retained<AnyObject>, String), SystemAudioError> {
         let class = tap_description_class().ok_or(SystemAudioError::Unsupported)?;
 
-        let matched = matching_process_objects(target);
-        if matched.is_empty() {
-            return Err(SystemAudioError::NoMatchingProcesses {
-                bundle_ids: target.bundle_ids().to_vec(),
-            });
-        }
-        let included: Vec<Retained<NSNumber>> = matched
-            .iter()
-            .map(|object| NSNumber::new_u32(*object))
-            .collect();
-        let include_array = NSArray::from_retained_slice(&included);
-
-        // SAFETY: alloc + the documented CATapDescription initializer
-        // `initMonoMixdownOfProcesses:` (macOS 14.2+; existence of the class
-        // was checked above). The init consumes the alloc.
-        let desc: Retained<AnyObject> = unsafe {
-            let allocated: *mut AnyObject = msg_send![class, alloc];
-            let initialized: *mut AnyObject = msg_send![
-                allocated,
-                initMonoMixdownOfProcesses: &*include_array
-            ];
-            Retained::from_raw(initialized).ok_or_else(|| {
-                SystemAudioError::TapDescription("initMonoMixdownOfProcesses returned nil".into())
-            })?
+        // SAFETY: both CATapDescription initializers are documented on macOS
+        // 14.2+. A global tap is created even when no process is currently
+        // playing and automatically includes processes that start later. The
+        // current process is excluded whenever Core Audio exposes an object
+        // for it, preventing future app-owned sounds from feeding captions.
+        let desc: Retained<AnyObject> = if target.captures_all_system_audio() {
+            let excluded: Vec<Retained<NSNumber>> =
+                process_object_for_pid(std::process::id() as i32)
+                    .into_iter()
+                    .map(NSNumber::new_u32)
+                    .collect();
+            let exclude_array = NSArray::from_retained_slice(&excluded);
+            unsafe {
+                let allocated: *mut AnyObject = msg_send![class, alloc];
+                let initialized: *mut AnyObject = msg_send![
+                    allocated,
+                    initMonoGlobalTapButExcludeProcesses: &*exclude_array
+                ];
+                Retained::from_raw(initialized).ok_or_else(|| {
+                    SystemAudioError::TapDescription(
+                        "initMonoGlobalTapButExcludeProcesses returned nil".into(),
+                    )
+                })?
+            }
+        } else {
+            let matched = matching_process_objects(target);
+            if matched.is_empty() {
+                return Err(SystemAudioError::NoMatchingProcesses {
+                    bundle_ids: target.bundle_ids().to_vec(),
+                });
+            }
+            let included: Vec<Retained<NSNumber>> = matched
+                .iter()
+                .map(|object| NSNumber::new_u32(*object))
+                .collect();
+            let include_array = NSArray::from_retained_slice(&included);
+            unsafe {
+                let allocated: *mut AnyObject = msg_send![class, alloc];
+                let initialized: *mut AnyObject = msg_send![
+                    allocated,
+                    initMonoMixdownOfProcesses: &*include_array
+                ];
+                Retained::from_raw(initialized).ok_or_else(|| {
+                    SystemAudioError::TapDescription(
+                        "initMonoMixdownOfProcesses returned nil".into(),
+                    )
+                })?
+            }
         };
         // Track a configured bundle through process restarts when Core Audio
         // can restore it; this avoids silently losing remote audio after an app
@@ -594,6 +637,22 @@ mod imp {
             let supported: bool = msg_send![&*desc, respondsToSelector: selector];
             if supported {
                 let _: () = msg_send![&*desc, setProcessRestoreEnabled: Bool::YES];
+            }
+        }
+        unsafe {
+            let selector = sel!(setMuteBehavior:);
+            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
+            if supported {
+                // CATapDescription.h: CATapUnmuted = 0, CATapMuted = 1.
+                // Keep normal playback audible while taking a read-only tap.
+                let _: () = msg_send![&*desc, setMuteBehavior: 0isize];
+            }
+        }
+        unsafe {
+            let selector = sel!(setPrivate:);
+            let supported: bool = msg_send![&*desc, respondsToSelector: selector];
+            if supported {
+                let _: () = msg_send![&*desc, setPrivate: Bool::YES];
             }
         }
         // SAFETY: `UUID` / `UUIDString` are documented properties.
@@ -657,11 +716,8 @@ mod imp {
             if sym.is_null() {
                 return None;
             }
-            let request: unsafe extern "C" fn(
-                *const c_void,
-                *const c_void,
-                *mut c_void,
-            ) = std::mem::transmute(sym);
+            let request: unsafe extern "C" fn(*const c_void, *const c_void, *mut c_void) =
+                std::mem::transmute(sym);
             let service = CFString::new("kTCCServiceAudioCapture");
             let answered = Arc::new(std::sync::atomic::AtomicI32::new(-1));
             let answered_block = Arc::clone(&answered);
@@ -792,21 +848,20 @@ mod imp {
             let channels = format.m_channels_per_frame.max(1) as usize;
             let sample_rate = format.m_sample_rate.round() as u32;
 
-            // 2. A private aggregate device that contains only the tap, so no
-            //    other audio client ever sees it.
-            //
-            //    The tap is itself the clock-bearing member: it is driven by
-            //    the tapped processes' output cycles. Adding the physical
-            //    default output device as a `subdevices`/`master` member (in
-            //    the belief that an aggregate needs a hardware clock) stops the
-            //    IO proc from ever firing, even though every call up to and
-            //    including AudioDeviceStart still returns noErr. Keep this
-            //    aggregate tap-only.
+            // On macOS 14.x, including the physical output device (a common
+            // macOS 15-style configuration) prevents the IO callback from firing.
+            // The running process tap is the only aggregate member here.
             let device_uid = format!("com.lumen.asr.systemaudio.{tap_uuid}");
-            let tap_entry = CFDictionary::from_CFType_pairs(&[(
-                CFString::from_static_string("uid").as_CFType(),
-                CFString::new(&tap_uuid).as_CFType(),
-            )]);
+            let tap_entry = CFDictionary::from_CFType_pairs(&[
+                (
+                    CFString::from_static_string("uid").as_CFType(),
+                    CFString::new(&tap_uuid).as_CFType(),
+                ),
+                (
+                    CFString::from_static_string("drift").as_CFType(),
+                    CFNumber::from(1i32).as_CFType(),
+                ),
+            ]);
             let taps = CFArray::from_CFTypes(&[tap_entry.as_CFType()]);
             let agg_desc: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[
                 (
@@ -935,6 +990,7 @@ mod imp {
                 channels,
                 tap_uuid = %tap_uuid,
                 targets = ?target.bundle_ids(),
+                all_system_audio = target.captures_all_system_audio(),
                 "system audio tap capture started"
             );
             Ok(Self {
@@ -980,15 +1036,15 @@ mod imp {
 
         #[test]
         fn only_running_output_processes_match_a_target_bundle() {
-            let wanted = vec!["ai.perplexity.comet".to_string()];
+            let wanted = vec!["com.example.browser".to_string()];
 
             assert!(process_matches_target(
-                Some("ai.perplexity.comet.helper"),
+                Some("com.example.browser.helper"),
                 true,
                 &wanted,
             ));
             assert!(!process_matches_target(
-                Some("ai.perplexity.comet.helper"),
+                Some("com.example.browser.helper"),
                 false,
                 &wanted,
             ));
@@ -1036,5 +1092,14 @@ mod tests {
             " ".to_string(),
         ]);
         assert_eq!(target.bundle_ids(), &["com.google.Chrome"]);
+    }
+
+    #[test]
+    fn all_system_audio_target_is_valid_without_a_bundle_allowlist() {
+        let target = SystemAudioTarget::all_system_audio();
+
+        assert!(!target.is_empty());
+        assert!(target.captures_all_system_audio());
+        assert!(target.bundle_ids().is_empty());
     }
 }
