@@ -12,9 +12,11 @@ fs2 = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# SHA256 verification for raw (non-archive) model downloads.
+sha2 = { version = "0.10", optional = true }
 
 [features]
 default = ["download"]
-# SenseVoice package download/install (uses system `curl` + `tar`; no extra
-# Rust dependencies). Disable for path-resolution-only consumers.
-download = []
+# Model package download/install (uses system `curl` + `tar`). Disable for
+# path-resolution-only consumers.
+download = ["dep:sha2"]

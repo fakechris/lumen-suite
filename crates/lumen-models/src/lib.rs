@@ -10,8 +10,8 @@
 //! previously in `lumen-asr/docs/`). The contract-hash test below pins the
 //! contract body byte-for-byte to cluster v1.
 //!
-//! Feature `download` (default on, zero extra dependencies — uses system
-//! `curl` + `tar`) gates the SenseVoice package installer.
+//! Feature `download` (default on — uses system `curl` + `tar`, plus `sha2`
+//! for raw-file integrity pins) gates the model package installers.
 
 mod install_lock;
 mod paths;
@@ -25,14 +25,15 @@ pub use paths::app_models_dir;
 pub use paths::{
     default_paraformer_offline_dir, default_paraformer_offline_dir_with_root,
     default_paraformer_streaming_dir, default_paraformer_streaming_dir_with_root, default_qwen_dir,
-    default_sensevoice_dir, default_sensevoice_dir_with_root, default_whisper_dir,
-    default_whisper_dir_with_root, legacy_model_roots, lumen_models_dir,
+    default_sensevoice_dir, default_sensevoice_dir_with_root, default_silero_vad_dir,
+    default_whisper_dir, default_whisper_dir_with_root, legacy_model_roots, lumen_models_dir,
     lumen_models_dir_with_override, paraformer_decoder_path, paraformer_encoder_path,
     paraformer_offline_model_path, paraformer_offline_ready, paraformer_streaming_ready,
     paraformer_tokens_path, qwen_ready, resolve_qwen_asr_dir, resolve_sensevoice_dir,
     scan_model_candidates, scan_model_candidates_with_root, sensevoice_model_path,
     sensevoice_ready, sensevoice_tokens_path, shared_paraformer_offline_dir,
-    shared_paraformer_streaming_dir, shared_sensevoice_dir, shared_whisper_dir, user_home_dir,
+    shared_paraformer_streaming_dir, shared_sensevoice_dir, shared_silero_vad_dir,
+    shared_whisper_dir, silero_vad_model_path, silero_vad_ready, user_home_dir,
     whisper_decoder_path, whisper_encoder_path, whisper_ready, whisper_tokens_path, ModelCandidate,
     ENV_LUMEN_MODELS_DIR, ENV_LUMEN_NAVI_SENSEVOICE_DIR, ENV_LUMEN_NAVI_WHISPER_DIR,
     ENV_LUMEN_SENSEVOICE_DIR, ENV_LUMEN_WHISPER_DIR,
@@ -41,10 +42,11 @@ pub use paths::{
 #[cfg(feature = "download")]
 pub use download::{
     default_models_root, download_paraformer_offline_package,
-    download_paraformer_streaming_package, download_sensevoice_package, DownloadError,
-    DownloadProgress, PARAFORMER_OFFLINE_ARCHIVE_NAME, PARAFORMER_OFFLINE_ARCHIVE_URL,
-    PARAFORMER_STREAMING_ARCHIVE_NAME, PARAFORMER_STREAMING_ARCHIVE_URL, SENSEVOICE_ARCHIVE_NAME,
-    SENSEVOICE_ARCHIVE_URL,
+    download_paraformer_streaming_package, download_sensevoice_package,
+    download_silero_vad_package, DownloadError, DownloadProgress, PARAFORMER_OFFLINE_ARCHIVE_NAME,
+    PARAFORMER_OFFLINE_ARCHIVE_URL, PARAFORMER_STREAMING_ARCHIVE_NAME,
+    PARAFORMER_STREAMING_ARCHIVE_URL, SENSEVOICE_ARCHIVE_NAME, SENSEVOICE_ARCHIVE_URL,
+    SILERO_VAD_BYTES, SILERO_VAD_FILE_NAME, SILERO_VAD_SHA256, SILERO_VAD_URL,
 };
 
 #[cfg(test)]

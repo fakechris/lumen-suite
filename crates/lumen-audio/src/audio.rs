@@ -21,6 +21,18 @@ use std::thread;
 use std::time::Instant;
 use thiserror::Error;
 
+#[cfg(feature = "silero")]
+use crate::vad::SileroVad;
+#[cfg(feature = "silero")]
+use std::path::Path;
+
+/// Silero feed handed to the capture callback. Unit type when the `silero`
+/// feature is off, so the callback plumbing is identical in both builds.
+#[cfg(feature = "silero")]
+type SileroFeed = Option<Arc<SileroVad>>;
+#[cfg(not(feature = "silero"))]
+type SileroFeed = ();
+
 #[derive(Debug, Error)]
 pub enum AudioError {
     #[error("no input device")]
@@ -33,6 +45,8 @@ pub enum AudioError {
     Device(String),
     #[error("stream error: {0}")]
     Stream(String),
+    #[error("vad error: {0}")]
+    Vad(String),
     #[error("audio thread unavailable")]
     ThreadGone,
 }
@@ -60,6 +74,16 @@ enum AudioCmd {
     },
 }
 
+/// A pre-loaded silero VAD session. The model is loaded on the calling
+/// thread in [`AudioCapture::set_silero_vad`] — never on the audio thread —
+/// and shared into each recording's callback.
+#[cfg(feature = "silero")]
+struct SileroSession {
+    /// Path the model was loaded from; re-enabling the same path reuses it.
+    model_path: std::path::PathBuf,
+    vad: Arc<SileroVad>,
+}
+
 /// Cross-platform mic capture manager (Send + Sync).
 pub struct AudioCapture {
     recording: Arc<AtomicBool>,
@@ -68,6 +92,10 @@ pub struct AudioCapture {
     /// Latest callback chunk RMS (f32 bits); 0 when idle. Lets a VAD watcher
     /// observe the live session without locking the sample buffer.
     latest_rms: Arc<AtomicU32>,
+    /// Optional silero VAD backend; `None` (default) means the callback does
+    /// zero extra work.
+    #[cfg(feature = "silero")]
+    silero: Arc<Mutex<Option<SileroSession>>>,
 }
 
 impl Default for AudioCapture {
@@ -92,6 +120,10 @@ impl AudioCapture {
         let samples_for_thread = Arc::clone(&samples_slot);
         let epoch_for_thread = Arc::clone(&epoch);
         let rms_for_thread = Arc::clone(&latest_rms);
+        #[cfg(feature = "silero")]
+        let silero: Arc<Mutex<Option<SileroSession>>> = Arc::new(Mutex::new(None));
+        #[cfg(feature = "silero")]
+        let silero_for_thread = Arc::clone(&silero);
 
         thread::Builder::new()
             .name("lumen-audio".into())
@@ -102,6 +134,19 @@ impl AudioCapture {
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         AudioCmd::Start { device, reply } => {
+                            // Resolve the silero session here (audio command
+                            // thread), reset it for the new session, and hand
+                            // an Arc to the callback. The model itself was
+                            // loaded earlier in `set_silero_vad` — this is
+                            // cheap state clearing only.
+                            #[cfg(feature = "silero")]
+                            let silero_feed: SileroFeed =
+                                silero_for_thread.lock().as_ref().map(|session| {
+                                    session.vad.reset();
+                                    Arc::clone(&session.vad)
+                                });
+                            #[cfg(not(feature = "silero"))]
+                            let silero_feed: SileroFeed = ();
                             let res = start_on_thread(
                                 device,
                                 &rec_flag,
@@ -109,6 +154,7 @@ impl AudioCapture {
                                 &epoch_for_thread,
                                 &samples_for_thread,
                                 &rms_for_thread,
+                                silero_feed,
                                 &mut stream_slot,
                             );
                             if res.is_ok() {
@@ -182,6 +228,8 @@ impl AudioCapture {
             preferred_device,
             cmd_tx: Mutex::new(Some(tx)),
             latest_rms,
+            #[cfg(feature = "silero")]
+            silero,
         }
     }
 
@@ -193,6 +241,66 @@ impl AudioCapture {
     pub fn latest_rms(&self) -> Option<f32> {
         self.is_recording()
             .then(|| f32::from_bits(self.latest_rms.load(Ordering::SeqCst)))
+    }
+
+    /// Enable/disable the silero VAD backend for subsequent recordings.
+    ///
+    /// `Some(path)` loads the model **now, on the calling thread** (tens of
+    /// ms) and returns an error — fail-open, caller falls back to RMS — when
+    /// the file is missing or fails to initialize. `None` disables silero, in
+    /// which case the capture callback does zero extra work. Re-enabling the
+    /// same path reuses the already-loaded model.
+    #[cfg(feature = "silero")]
+    pub fn set_silero_vad(&self, model_path: Option<&Path>) -> Result<(), AudioError> {
+        let mut slot = self.silero.lock();
+        let Some(path) = model_path else {
+            *slot = None;
+            return Ok(());
+        };
+        if let Some(session) = slot.as_ref() {
+            if session.model_path == path {
+                return Ok(());
+            }
+        }
+        let vad = SileroVad::new(path, 0.5).map_err(|e| AudioError::Vad(e.to_string()))?;
+        *slot = Some(SileroSession {
+            model_path: path.to_path_buf(),
+            vad: Arc::new(vad),
+        });
+        Ok(())
+    }
+
+    /// Whether a silero VAD session is installed (fed from the callback).
+    #[cfg(feature = "silero")]
+    pub fn silero_vad_active(&self) -> bool {
+        self.silero.lock().is_some()
+    }
+
+    /// ms of the most recent detected speech in the live recording (silero
+    /// path); `None` when idle, silero disabled, or no speech detected yet.
+    #[cfg(feature = "silero")]
+    pub fn silero_last_speech_at_ms(&self) -> Option<u64> {
+        if !self.is_recording() {
+            return None;
+        }
+        self.silero
+            .lock()
+            .as_ref()
+            .and_then(|session| session.vad.last_speech_at_ms())
+    }
+
+    /// ms of audio fed to silero in the live recording; `None` when idle or
+    /// silero disabled. Shares its clock with [`Self::silero_last_speech_at_ms`]
+    /// (16 kHz samples fed), so `elapsed - last_speech` is the silence run.
+    #[cfg(feature = "silero")]
+    pub fn silero_elapsed_ms(&self) -> Option<u64> {
+        if !self.is_recording() {
+            return None;
+        }
+        self.silero
+            .lock()
+            .as_ref()
+            .map(|session| session.vad.elapsed_ms())
     }
 
     pub fn set_device(&self, name: Option<String>) {
@@ -265,6 +373,7 @@ fn start_on_thread(
     epoch: &Arc<AtomicU64>,
     samples_slot: &Arc<Mutex<Option<Arc<Mutex<Vec<f32>>>>>>,
     latest_rms: &Arc<AtomicU32>,
+    silero_feed: SileroFeed,
     stream_slot: &mut Option<cpal::Stream>,
 ) -> Result<(), AudioError> {
     if recording.swap(true, Ordering::SeqCst) {
@@ -313,30 +422,36 @@ fn start_on_thread(
             &device,
             &stream_config,
             channels,
+            sample_rate,
             samples_cb,
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
+            silero_feed,
             err_fn,
         ),
         SampleFormat::I16 => build_stream::<i16>(
             &device,
             &stream_config,
             channels,
+            sample_rate,
             samples_cb,
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
+            silero_feed,
             err_fn,
         ),
         SampleFormat::U16 => build_stream::<u16>(
             &device,
             &stream_config,
             channels,
+            sample_rate,
             samples_cb,
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
+            silero_feed,
             err_fn,
         ),
         other => {
@@ -388,16 +503,21 @@ fn build_stream<T>(
     device: &Device,
     config: &StreamConfig,
     channels: usize,
+    sample_rate: u32,
     samples: Arc<Mutex<Vec<f32>>>,
     epoch: Arc<AtomicU64>,
     session_epoch: u64,
     latest_rms: Arc<AtomicU32>,
+    silero: SileroFeed,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: Sample + SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
+    let mut chunk_scratch: Vec<f32> = Vec::new();
+    #[cfg(feature = "silero")]
+    let mut resample_scratch: Vec<f32> = Vec::new();
     device
         .build_input_stream(
             config,
@@ -406,15 +526,11 @@ where
                 if epoch.load(Ordering::SeqCst) != session_epoch {
                     return;
                 }
-                let mut buf = samples.lock();
-                let mut sum_sq = 0.0f64;
-                let mut n = 0u64;
+                // Mono mixdown of this chunk into scratch (reused allocation).
+                chunk_scratch.clear();
                 if channels <= 1 {
                     for &s in data {
-                        let v = s.to_sample::<f32>();
-                        sum_sq += f64::from(v) * f64::from(v);
-                        n += 1;
-                        buf.push(v);
+                        chunk_scratch.push(s.to_sample::<f32>());
                     }
                 } else {
                     for frame in data.chunks(channels) {
@@ -422,18 +538,40 @@ where
                         for &s in frame {
                             sum += s.to_sample::<f32>();
                         }
-                        let v = sum / channels as f32;
-                        sum_sq += f64::from(v) * f64::from(v);
-                        n += 1;
-                        buf.push(v);
+                        chunk_scratch.push(sum / channels as f32);
                     }
                 }
+                let n = chunk_scratch.len() as u64;
+                let sum_sq: f64 = chunk_scratch
+                    .iter()
+                    .map(|&v| f64::from(v) * f64::from(v))
+                    .sum();
+                samples.lock().extend_from_slice(&chunk_scratch);
                 if n > 0 {
                     latest_rms.store(
                         ((sum_sq / n as f64).sqrt() as f32).to_bits(),
                         Ordering::SeqCst,
                     );
                 }
+                // Silero path: resample the chunk to 16 kHz and feed the VAD.
+                // `silero` is `None` unless explicitly enabled — zero cost then
+                // (and the whole block is a no-op without the feature).
+                #[cfg(feature = "silero")]
+                if let Some(vad) = &silero {
+                    if sample_rate == SileroVad::SAMPLE_RATE {
+                        vad.accept_waveform_16k(&chunk_scratch);
+                    } else {
+                        resample_chunk_linear(
+                            &chunk_scratch,
+                            sample_rate,
+                            SileroVad::SAMPLE_RATE,
+                            &mut resample_scratch,
+                        );
+                        vad.accept_waveform_16k(&resample_scratch);
+                    }
+                }
+                #[cfg(not(feature = "silero"))]
+                let _ = (&silero, sample_rate);
             },
             err_fn,
             None,
@@ -441,5 +579,77 @@ where
         .map_err(|e| AudioError::Stream(e.to_string()))
 }
 
-// Resampling and WAV helpers moved to `lumen_asr_engine::audio`
-// (re-exported from this crate's root).
+/// Per-chunk linear resample into `out` (cleared first). Equivalent of
+/// lumen-asr-engine's `resample_linear`, duplicated so lumen-audio stays free
+/// of the engine crate; VAD-only use, so chunk-boundary rounding is fine.
+#[cfg(feature = "silero")]
+fn resample_chunk_linear(samples: &[f32], from_hz: u32, to_hz: u32, out: &mut Vec<f32>) {
+    out.clear();
+    if samples.is_empty() || from_hz == 0 || to_hz == 0 {
+        return;
+    }
+    if from_hz == to_hz {
+        out.extend_from_slice(samples);
+        return;
+    }
+    let ratio = from_hz as f64 / to_hz as f64;
+    let out_len = ((samples.len() as f64) / ratio).floor().max(1.0) as usize;
+    out.reserve(out_len);
+    for i in 0..out_len {
+        let src = i as f64 * ratio;
+        let i0 = src.floor() as usize;
+        let i1 = (i0 + 1).min(samples.len().saturating_sub(1));
+        let t = (src - i0 as f64) as f32;
+        let a = samples[i0.min(samples.len() - 1)];
+        out.push(a + (samples[i1] - a) * t);
+    }
+}
+
+// WAV decode/encode and the general-purpose resampler live in
+// `lumen_asr_engine::audio`; the capture callback keeps its own private
+// per-chunk resampler above so lumen-audio stays free of the engine crate.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "silero")]
+    #[test]
+    fn set_silero_vad_missing_model_fails_open() {
+        let capture = AudioCapture::new();
+        let err = capture
+            .set_silero_vad(Some(Path::new("/nonexistent/silero_vad.onnx")))
+            .unwrap_err();
+        assert!(matches!(err, AudioError::Vad(_)), "{err}");
+        assert!(!capture.silero_vad_active());
+        assert_eq!(capture.silero_last_speech_at_ms(), None);
+        assert_eq!(capture.silero_elapsed_ms(), None);
+    }
+
+    #[cfg(feature = "silero")]
+    #[test]
+    fn set_silero_vad_none_disables() {
+        let capture = AudioCapture::new();
+        capture.set_silero_vad(None).unwrap();
+        assert!(!capture.silero_vad_active());
+    }
+
+    #[cfg(feature = "silero")]
+    #[test]
+    fn resample_chunk_linear_downsamples() {
+        let samples: Vec<f32> = (0..96).map(|i| i as f32 / 96.0).collect();
+        let mut out = Vec::new();
+        resample_chunk_linear(&samples, 48_000, 16_000, &mut out);
+        assert_eq!(out.len(), 32);
+
+        // Identity rate passes samples through unchanged.
+        resample_chunk_linear(&samples, 16_000, 16_000, &mut out);
+        assert_eq!(out, samples);
+
+        // Degenerate inputs never panic and yield nothing.
+        resample_chunk_linear(&[], 48_000, 16_000, &mut out);
+        assert!(out.is_empty());
+        resample_chunk_linear(&samples, 0, 16_000, &mut out);
+        assert!(out.is_empty());
+    }
+}

@@ -142,6 +142,12 @@ pub fn shared_paraformer_streaming_dir(models_root: Option<&Path>) -> PathBuf {
         .join("streaming")
 }
 
+/// Canonical install dir for the Silero VAD model under the cluster root:
+/// `<models>/silero-vad`.
+pub fn shared_silero_vad_dir(models_root: Option<&Path>) -> PathBuf {
+    lumen_models_dir_with_override(models_root).join("silero-vad")
+}
+
 /// Offline Paraformer dir under the shared cluster root (`paraformer/offline`).
 ///
 /// Paraformer has no legacy per-app layout or env override, so this is simply
@@ -162,6 +168,14 @@ pub fn default_paraformer_streaming_dir() -> PathBuf {
 
 pub fn default_paraformer_streaming_dir_with_root(models_root: Option<&Path>) -> PathBuf {
     shared_paraformer_streaming_dir(models_root)
+}
+
+/// Silero VAD dir under the shared cluster root (`silero-vad`).
+///
+/// Silero VAD has no legacy per-app layout or env override, so this is simply
+/// the shared install target — ready or not.
+pub fn default_silero_vad_dir() -> PathBuf {
+    shared_silero_vad_dir(None)
 }
 
 /// Pre-cluster per-app roots, scanned on every platform so upgrades never
@@ -635,6 +649,16 @@ pub fn paraformer_tokens_path(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Silero VAD readiness: the single `silero_vad.onnx` model file.
+pub fn silero_vad_ready(dir: &Path) -> bool {
+    silero_vad_model_path(dir).is_some()
+}
+
+pub fn silero_vad_model_path(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("silero_vad.onnx");
+    path.is_file().then_some(path)
+}
+
 fn matching_file(dir: &Path, contains: &str, suffix: &str) -> Option<PathBuf> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -765,6 +789,26 @@ mod tests {
             Some(dir.join("model.int8.onnx"))
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn silero_vad_ready_requires_model_file() {
+        let dir = temp_dir("silero-vad-ready");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!silero_vad_ready(&dir));
+        std::fs::write(dir.join("silero_vad.onnx"), b"model").unwrap();
+        assert!(silero_vad_ready(&dir));
+        assert_eq!(
+            silero_vad_model_path(&dir),
+            Some(dir.join("silero_vad.onnx"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn silero_vad_shared_dir_is_under_models_root() {
+        let root = temp_dir("silero-vad-root");
+        assert_eq!(shared_silero_vad_dir(Some(&root)), root.join("silero-vad"));
     }
 
     #[test]
