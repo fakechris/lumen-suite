@@ -1,4 +1,4 @@
-//! Download + install sherpa ASR packages (onboarding).
+//! Download + install sherpa model packages (onboarding).
 //!
 //! Uses system `curl` + `tar` (macOS-friendly, zero extra Rust dependencies)
 //! and follows the cross-process install protocol from contract §6:
@@ -7,12 +7,15 @@
 //!
 //! One generic engine ([`download_model_package`]) backs every model; each
 //! model is described by a [`ModelPackage`]. SenseVoice, offline Paraformer,
-//! and streaming Paraformer are the shipped packages. All three sherpa
-//! archives are `.tar.bz2`, extracted with `tar -xjf` (the `-j` flag handles
-//! bzip2), so no per-format branching is needed.
+//! and streaming Paraformer ship as `.tar.bz2` archives (extracted with
+//! `tar -xjf`); Silero VAD ships as a single raw `.onnx` file that is verified
+//! against a pinned SHA256 + size before publishing.
 
 use crate::install_lock::ModelInstallLock;
-use crate::paths::{paraformer_offline_ready, paraformer_streaming_ready, sensevoice_ready};
+use crate::paths::{
+    paraformer_offline_ready, paraformer_streaming_ready, sensevoice_ready, silero_vad_ready,
+};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,6 +44,16 @@ pub const PARAFORMER_STREAMING_ARCHIVE_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2";
 pub const PARAFORMER_STREAMING_ARCHIVE_NAME: &str =
     "sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2";
+
+/// Official Silero VAD model (single ONNX file, ~2 MB, not an archive).
+pub const SILERO_VAD_URL: &str =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+pub const SILERO_VAD_FILE_NAME: &str = "silero_vad.onnx";
+/// Pinned integrity for [`SILERO_VAD_URL`], verified after every download
+/// (fail closed: a corrupted or tampered download is deleted, not installed).
+pub const SILERO_VAD_SHA256: &str =
+    "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6";
+pub const SILERO_VAD_BYTES: u64 = 643_854;
 
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
@@ -77,6 +90,19 @@ enum Publish {
     SelectFiles(&'static [&'static [&'static str]]),
 }
 
+/// What the downloaded bytes are and how they become the installed package.
+enum Payload {
+    /// `.tar.bz2` archive, extracted with `tar -xjf` then published.
+    TarBz2(Publish),
+    /// Single raw file downloaded as-is. Verified against the pinned
+    /// SHA256 + size, then renamed into `final_dir/file_name`.
+    RawFile {
+        file_name: &'static str,
+        sha256: &'static str,
+        bytes: u64,
+    },
+}
+
 /// A downloadable sherpa model package.
 struct ModelPackage {
     url: &'static str,
@@ -90,7 +116,7 @@ struct ModelPackage {
     display: &'static str,
     /// Readiness predicate for the final directory.
     ready: fn(&Path) -> bool,
-    publish: Publish,
+    payload: Payload,
 }
 
 const SENSEVOICE_PACKAGE: ModelPackage = ModelPackage {
@@ -100,7 +126,7 @@ const SENSEVOICE_PACKAGE: ModelPackage = ModelPackage {
     slug: "sensevoice",
     display: "SenseVoice",
     ready: sensevoice_ready,
-    publish: Publish::WholeDir,
+    payload: Payload::TarBz2(Publish::WholeDir),
 };
 
 const PARAFORMER_OFFLINE_PACKAGE: ModelPackage = ModelPackage {
@@ -110,7 +136,10 @@ const PARAFORMER_OFFLINE_PACKAGE: ModelPackage = ModelPackage {
     slug: "paraformer-offline",
     display: "Paraformer (offline)",
     ready: paraformer_offline_ready,
-    publish: Publish::SelectFiles(&[&["model.int8.onnx", "model.onnx"], &["tokens.txt"]]),
+    payload: Payload::TarBz2(Publish::SelectFiles(&[
+        &["model.int8.onnx", "model.onnx"],
+        &["tokens.txt"],
+    ])),
 };
 
 const PARAFORMER_STREAMING_PACKAGE: ModelPackage = ModelPackage {
@@ -120,11 +149,25 @@ const PARAFORMER_STREAMING_PACKAGE: ModelPackage = ModelPackage {
     slug: "paraformer-streaming",
     display: "Paraformer (streaming)",
     ready: paraformer_streaming_ready,
-    publish: Publish::SelectFiles(&[
+    payload: Payload::TarBz2(Publish::SelectFiles(&[
         &["encoder.int8.onnx", "encoder.onnx"],
         &["decoder.int8.onnx", "decoder.onnx"],
         &["tokens.txt"],
-    ]),
+    ])),
+};
+
+const SILERO_VAD_PACKAGE: ModelPackage = ModelPackage {
+    url: SILERO_VAD_URL,
+    archive_name: SILERO_VAD_FILE_NAME,
+    rel_dir: "silero-vad",
+    slug: "silero-vad",
+    display: "Silero VAD",
+    ready: silero_vad_ready,
+    payload: Payload::RawFile {
+        file_name: SILERO_VAD_FILE_NAME,
+        sha256: SILERO_VAD_SHA256,
+        bytes: SILERO_VAD_BYTES,
+    },
 };
 
 /// Install SenseVoice under `models_root/sensevoice`.
@@ -170,6 +213,20 @@ pub fn download_paraformer_streaming_package(
         cancel,
         on_progress,
     )
+}
+
+/// Install the Silero VAD model under `models_root/silero-vad`.
+///
+/// Single raw ONNX file (no archive): the download is verified against the
+/// pinned [`SILERO_VAD_SHA256`] + [`SILERO_VAD_BYTES`] before publishing —
+/// fail closed on mismatch. Shares the cluster install lock and progress
+/// protocol with the other packages; short-circuits when already installed.
+pub fn download_silero_vad_package(
+    models_root: &Path,
+    cancel: &AtomicBool,
+    on_progress: impl FnMut(DownloadProgress),
+) -> Result<PathBuf, DownloadError> {
+    download_model_package(models_root, &SILERO_VAD_PACKAGE, cancel, on_progress)
 }
 
 /// The generic install engine backing every [`ModelPackage`].
@@ -270,6 +327,44 @@ fn download_model_package(
     let bytes = std::fs::metadata(&archive_path)
         .map(|meta| meta.len())
         .unwrap_or(0);
+
+    let publish = match &package.payload {
+        Payload::RawFile {
+            file_name,
+            sha256,
+            bytes: expected_bytes,
+        } => {
+            on_progress(progress(
+                "extracting",
+                "Verifying download integrity…",
+                bytes,
+                Some(bytes),
+            ));
+            // Fail closed: a corrupted or tampered download is removed with
+            // the scratch cleanup, never published.
+            verify_pinned_file(&archive_path, sha256, *expected_bytes)?;
+            std::fs::create_dir_all(&final_dir)?;
+            let target = final_dir.join(file_name);
+            // Same filesystem as the scratch archive, so the rename is atomic.
+            std::fs::rename(&archive_path, &target).map_err(|error| {
+                DownloadError::Failed(format!("publish model atomically: {error}"))
+            })?;
+            if !(package.ready)(&final_dir) {
+                return Err(DownloadError::Failed(
+                    "model installed but validation failed".into(),
+                ));
+            }
+            on_progress(progress(
+                "done",
+                &format!("{} ready", package.display),
+                bytes,
+                Some(bytes),
+            ));
+            return Ok(final_dir);
+        }
+        Payload::TarBz2(publish) => publish,
+    };
+
     on_progress(progress(
         "extracting",
         "Extracting archive…",
@@ -302,7 +397,7 @@ fn download_model_package(
     })?;
 
     let staging = extract_tmp.join("_staging");
-    publish_package(&found, &final_dir, &package.publish, &staging)?;
+    publish_package(&found, &final_dir, publish, &staging)?;
 
     if !(package.ready)(&final_dir) {
         return Err(DownloadError::Failed(
@@ -390,6 +485,38 @@ fn progress(phase: &str, message: &str, bytes: u64, total: Option<u64>) -> Downl
     }
 }
 
+/// Verify a downloaded raw file against its pinned size + SHA256.
+fn verify_pinned_file(path: &Path, sha256: &str, bytes: u64) -> Result<(), DownloadError> {
+    let actual_bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    if actual_bytes != bytes {
+        return Err(DownloadError::Failed(format!(
+            "downloaded file size mismatch: expected {bytes} bytes, got {actual_bytes}"
+        )));
+    }
+    let digest = sha256_file(path)?;
+    if !digest.eq_ignore_ascii_case(sha256) {
+        return Err(DownloadError::Failed(
+            "downloaded file failed integrity check (sha256 mismatch)".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, DownloadError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Removes pid-unique scratch paths on scope exit (including error paths).
 struct DownloadScratch {
     archive: PathBuf,
@@ -457,6 +584,23 @@ mod tests {
                 "url should end with archive name: {url}"
             );
             assert!(name.ends_with(".tar.bz2"), "{name}");
+        }
+    }
+
+    #[test]
+    fn silero_vad_url_is_https_raw_onnx() {
+        assert!(SILERO_VAD_URL.starts_with("https://"));
+        assert!(SILERO_VAD_URL.ends_with(SILERO_VAD_FILE_NAME));
+        assert!(SILERO_VAD_FILE_NAME.ends_with(".onnx"));
+        assert_eq!(SILERO_VAD_SHA256.len(), 64);
+        assert!(SILERO_VAD_BYTES > 0);
+    }
+
+    /// Extract the tar publish mode of a package (panics for raw-file ones).
+    fn publish_of(package: &ModelPackage) -> &Publish {
+        match &package.payload {
+            Payload::TarBz2(publish) => publish,
+            Payload::RawFile { .. } => panic!("not a tar package"),
         }
     }
 
@@ -568,7 +712,7 @@ mod tests {
         publish_package(
             &found,
             &final_dir,
-            &PARAFORMER_OFFLINE_PACKAGE.publish,
+            publish_of(&PARAFORMER_OFFLINE_PACKAGE),
             &staging,
         )
         .unwrap();
@@ -600,7 +744,7 @@ mod tests {
         publish_package(
             &found,
             &final_dir,
-            &PARAFORMER_STREAMING_PACKAGE.publish,
+            publish_of(&PARAFORMER_STREAMING_PACKAGE),
             &staging,
         )
         .unwrap();
@@ -627,7 +771,13 @@ mod tests {
 
         let final_dir = root.join("sensevoice");
         let staging = root.join("_staging");
-        publish_package(&found, &final_dir, &SENSEVOICE_PACKAGE.publish, &staging).unwrap();
+        publish_package(
+            &found,
+            &final_dir,
+            publish_of(&SENSEVOICE_PACKAGE),
+            &staging,
+        )
+        .unwrap();
 
         assert!(sensevoice_ready(&final_dir));
         assert!(final_dir.join("model.int8.onnx").is_file());
@@ -635,6 +785,72 @@ mod tests {
         // WholeDir keeps everything (no file selection).
         assert!(final_dir.join("README.md").is_file());
         assert!(!found.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn silero_vad_already_installed_short_circuits() {
+        let root = temp_dir("download-silero-ready");
+        let dir = root.join("silero-vad");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("silero_vad.onnx"), b"model").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let mut phases = Vec::new();
+        let installed =
+            download_silero_vad_package(&root, &cancel, |p| phases.push(p.phase)).unwrap();
+
+        assert_eq!(installed, dir);
+        assert_eq!(phases, vec!["done".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_pinned_file_accepts_matching_content() {
+        let root = temp_dir("verify-ok");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("silero_vad.onnx");
+        std::fs::write(&file, b"hello").unwrap();
+        let digest = sha256_file(&file).unwrap();
+        verify_pinned_file(&file, &digest, 5).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_pinned_file_rejects_size_and_hash_mismatch() {
+        let root = temp_dir("verify-bad");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("silero_vad.onnx");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let err = verify_pinned_file(&file, SILERO_VAD_SHA256, 6).unwrap_err();
+        assert!(err.to_string().contains("size mismatch"), "{err}");
+
+        let err = verify_pinned_file(&file, SILERO_VAD_SHA256, 5).unwrap_err();
+        assert!(err.to_string().contains("sha256 mismatch"), "{err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Real end-to-end download (~2 MB) against the pinned URL. Ignored by
+    /// default; run explicitly to validate the download path:
+    /// `cargo test -p lumen-models -- --ignored silero_vad_real_download`.
+    #[test]
+    #[ignore]
+    fn silero_vad_real_download_verifies_and_installs() {
+        let root = temp_dir("silero-real-download");
+        let cancel = AtomicBool::new(false);
+        let installed = download_silero_vad_package(&root, &cancel, |_| {}).unwrap();
+        assert!(silero_vad_ready(&installed));
+        let model = installed.join(SILERO_VAD_FILE_NAME);
+        let size = std::fs::metadata(&model)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        assert_eq!(size, SILERO_VAD_BYTES);
+        assert_eq!(sha256_file(&model).unwrap(), SILERO_VAD_SHA256);
+        // Idempotent: a second run short-circuits without network.
+        let mut phases = Vec::new();
+        download_silero_vad_package(&root, &cancel, |p| phases.push(p.phase)).unwrap();
+        assert_eq!(phases, vec!["done".to_string()]);
         let _ = std::fs::remove_dir_all(root);
     }
 }
