@@ -233,8 +233,6 @@ impl Drop for SystemAudioCapture {
     }
 }
 
-#[cfg(target_os = "macos")]
-
 /// TCC kTCCServiceAudioCapture preflight: 0 = granted, 1 = denied,
 /// negative = undetermined/unavailable. The process tap silently delivers
 /// silence while this is not granted.
@@ -257,6 +255,7 @@ pub fn tcc_request_audio_capture(timeout: std::time::Duration) -> Option<bool> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = timeout;
         None
     }
 }
@@ -272,6 +271,8 @@ pub fn debug_process_list() -> Vec<(u32, i32, String)> {
         Vec::new()
     }
 }
+
+#[cfg(target_os = "macos")]
 mod imp {
     use super::{SystemAudioError, SystemAudioSink, SystemAudioTarget};
     use std::ffi::{c_char, c_void};
