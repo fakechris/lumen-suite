@@ -2,8 +2,9 @@
 //! touches the dictation `AudioCapture` (hold-to-talk, single in-memory buffer).
 //!
 //! Meetings are long (30–60 min+), so we must not keep the whole take in RAM.
-//! Samples are **streamed incrementally to a WAV file** as they arrive, so
-//! memory stays bounded regardless of duration.
+//! Samples are **streamed incrementally to disk** — PCM16 WAV via [`WavSink`]
+//! or Ogg-Opus via [`crate::opus_sink::OpusSink`], per [`MeetingAudioFormat`] —
+//! as they arrive, so memory stays bounded regardless of duration.
 //!
 //! Threading mirrors `audio.rs`: `cpal::Stream` is `!Send` on macOS, so the
 //! stream lives on a dedicated control thread and `MeetingRecorder` only holds
@@ -15,6 +16,7 @@
 //! `cpal::Stream` is dropped; a per-session `epoch` guards against those
 //! "zombie" callbacks polluting the next recording.
 
+use crate::opus_sink::OpusSink;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use parking_lot::Mutex;
@@ -46,10 +48,48 @@ pub enum MeetingRecorderError {
     ThreadGone,
 }
 
+/// On-disk format of a meeting recording track. Default is WAV; the desktop
+/// selects Opus to encode while recording (~10× smaller for speech).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingAudioFormat {
+    /// Raw PCM16 mono WAV (legacy default; header-repairable after a crash).
+    #[default]
+    Wav,
+    /// Ogg-Opus at 16 kHz mono (~24 kbps VBR), encoded while recording.
+    Opus,
+}
+
+impl MeetingAudioFormat {
+    /// Stable lowercase name (`"wav"` / `"opus"`), used in serde and configs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Opus => "opus",
+        }
+    }
+
+    /// Parse a format name (case-insensitive); `None` for anything unknown.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "wav" => Some(Self::Wav),
+            "opus" => Some(Self::Opus),
+            _ => None,
+        }
+    }
+
+    /// File extension for recordings in this format (`.opus` files are Ogg
+    /// containers, per convention).
+    pub fn extension(self) -> &'static str {
+        self.as_str()
+    }
+}
+
 /// Result of a finished recording.
 #[derive(Debug, Clone)]
 pub struct RecordingSummary {
-    /// Path of the finalized WAV file.
+    /// Path of the finalized recording file (WAV or Opus, per the requested
+    /// [`MeetingAudioFormat`]). Named `wav_path` for historical reasons.
     pub wav_path: PathBuf,
     /// Total recorded audio length in seconds (excludes paused gaps).
     pub duration_seconds: f64,
@@ -128,7 +168,7 @@ impl GapDetector {
 
 /// Append `n` samples of silence to `sink` in bounded blocks, so a long stall
 /// never allocates one huge buffer. Block size is not correctness-critical.
-fn write_silence(sink: &mut WavSink, mut n: u64) -> io::Result<()> {
+fn write_silence(sink: &mut TrackSink, mut n: u64) -> io::Result<()> {
     const BLOCK: usize = 16_000;
     let zeros = [0.0f32; BLOCK];
     while n > 0 {
@@ -237,6 +277,71 @@ fn write_placeholder_header<W: Write>(w: &mut W, sample_rate: u32) -> io::Result
     w.write_all(b"data")?;
     w.write_all(&0u32.to_le_bytes())?; // patched on finalize
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TrackSink — format-erased sink shared by both recorder paths.
+//
+// The writer thread, gap detector, and silence watchdog work identically for
+// WAV and Opus takes; this enum lets them stay single-path. All methods defer
+// to the underlying sink, so the two formats keep identical contracts
+// (`samples_written`/`finalize` in the input sample domain).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TrackSink {
+    Wav(WavSink),
+    Opus(OpusSink),
+}
+
+impl TrackSink {
+    fn create(
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+        format: MeetingAudioFormat,
+    ) -> io::Result<Self> {
+        Ok(match format {
+            MeetingAudioFormat::Wav => Self::Wav(WavSink::create(path, sample_rate)?),
+            MeetingAudioFormat::Opus => Self::Opus(OpusSink::create(path, sample_rate)?),
+        })
+    }
+
+    fn write_samples(&mut self, samples: &[f32]) -> io::Result<()> {
+        match self {
+            Self::Wav(s) => s.write_samples(samples),
+            Self::Opus(s) => s.write_samples(samples),
+        }
+    }
+
+    fn samples_written(&self) -> u64 {
+        match self {
+            Self::Wav(s) => s.samples_written(),
+            Self::Opus(s) => s.samples_written(),
+        }
+    }
+
+    fn finalize(self) -> io::Result<u64> {
+        match self {
+            Self::Wav(s) => s.finalize(),
+            Self::Opus(s) => s.finalize(),
+        }
+    }
+
+    fn sample_rate(&self) -> u32 {
+        match self {
+            Self::Wav(s) => s.sample_rate(),
+            Self::Opus(s) => s.sample_rate(),
+        }
+    }
+
+    /// Cap for silence padding. WAV size fields are 32-bit, so a very long
+    /// capture stall must be clamped to keep the header valid; Ogg granule
+    /// positions are 64-bit and need no clamp.
+    fn max_samples(&self) -> u64 {
+        match self {
+            Self::Wav(_) => WAV_MAX_SAMPLES,
+            Self::Opus(_) => u64::MAX,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -431,11 +536,11 @@ enum WriterMsg {
     Finalize(Sender<io::Result<(u64, Vec<MeetingGap>)>>),
 }
 
-/// Spawn the WAV writer thread. `voiced`, when present, observes only real
+/// Spawn the track writer thread. `voiced`, when present, observes only real
 /// captured chunks (never synthetic gap padding), so callers can distinguish
 /// an active meeting from prolonged physical silence without involving ASR.
 fn spawn_writer(
-    mut sink: WavSink,
+    mut sink: TrackSink,
     voiced: Option<Arc<VoicedTracker>>,
 ) -> (Sender<WriterMsg>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<WriterMsg>();
@@ -454,11 +559,11 @@ fn spawn_writer(
                         }
                         // Before writing this chunk, pad any capture stall that
                         // preceded it so media time stays aligned to real time.
-                        // Clamp the pad to the WAV's remaining capacity so a very
-                        // long stall can never overflow the 32-bit RIFF sizes into
-                        // a malformed, multi-GB file.
+                        // Clamp the pad to the sink's remaining capacity (WAV
+                        // size fields are 32-bit) so a very long stall can never
+                        // produce a malformed, multi-GB file.
                         if let Some(pad) = detector.observe(samples.len(), arrived_at) {
-                            let remaining = WAV_MAX_SAMPLES.saturating_sub(sink.samples_written());
+                            let remaining = sink.max_samples().saturating_sub(sink.samples_written());
                             let pad = pad.min(remaining);
                             let sr = sink.sample_rate().max(1) as f64;
                             let start_seconds = sink.samples_written() as f64 / sr;
@@ -554,11 +659,21 @@ impl SystemTrackSender {
 }
 
 impl SystemTrackRecorder {
-    /// Create the WAV (placeholder header, same as the mic path) and spawn its
-    /// writer thread.
+    /// Create the track file (WAV, placeholder header, same as the mic path)
+    /// and spawn its writer thread.
     pub fn create(out_path: impl Into<PathBuf>, sample_rate: u32) -> io::Result<Self> {
+        Self::create_with_format(out_path, sample_rate, MeetingAudioFormat::Wav)
+    }
+
+    /// Like [`create`](Self::create), but records in `format` (WAV or
+    /// Ogg-Opus; see [`MeetingAudioFormat`]).
+    pub fn create_with_format(
+        out_path: impl Into<PathBuf>,
+        sample_rate: u32,
+        format: MeetingAudioFormat,
+    ) -> io::Result<Self> {
         let out_path = out_path.into();
-        let sink = WavSink::create(&out_path, sample_rate)?;
+        let sink = TrackSink::create(&out_path, sample_rate, format)?;
         let voiced = Arc::new(VoicedTracker::new());
         voiced.arm(sample_rate);
         let (writer_tx, writer_handle) = spawn_writer(sink, Some(Arc::clone(&voiced)));
@@ -592,7 +707,7 @@ impl SystemTrackRecorder {
         self.paused.store(paused, Ordering::SeqCst);
     }
 
-    /// Path of the WAV being written.
+    /// Path of the recording being written.
     pub fn out_path(&self) -> &Path {
         &self.out_path
     }
@@ -604,7 +719,8 @@ impl SystemTrackRecorder {
         self.voiced.silence_seconds()
     }
 
-    /// Finalize the WAV (back-fill the RIFF/`data` sizes) and join the writer.
+    /// Finalize the recording (WAV: back-fill the RIFF/`data` sizes; Opus:
+    /// flush the encoder and write the EOS page) and join the writer.
     pub fn finalize(self) -> io::Result<RecordingSummary> {
         let (fin_tx, fin_rx) = mpsc::channel();
         let _ = self.writer_tx.send(WriterMsg::Finalize(fin_tx));
@@ -742,6 +858,7 @@ enum RecCmd {
     Start {
         device: Option<String>,
         out_path: PathBuf,
+        format: MeetingAudioFormat,
         sample_sink: Option<SampleSink>,
         reply: Sender<Result<u32, MeetingRecorderError>>,
     },
@@ -802,12 +919,14 @@ impl MeetingRecorder {
                         RecCmd::Start {
                             device,
                             out_path,
+                            format,
                             sample_sink,
                             reply,
                         } => {
                             let res = start_on_thread(
                                 device,
                                 out_path,
+                                format,
                                 sample_sink,
                                 &rec_flag,
                                 &paused_flag,
@@ -880,8 +999,8 @@ impl MeetingRecorder {
         self.voiced.silence_seconds()
     }
 
-    /// Begin a continuous recording into `out_path`. Returns the native sample
-    /// rate. Fails if a recording is already in flight.
+    /// Begin a continuous recording into `out_path` (WAV). Returns the native
+    /// sample rate. Fails if a recording is already in flight.
     pub fn start(
         &self,
         device: Option<String>,
@@ -902,6 +1021,20 @@ impl MeetingRecorder {
         out_path: PathBuf,
         sample_sink: Option<SampleSink>,
     ) -> Result<u32, MeetingRecorderError> {
+        self.start_with_options(device, out_path, MeetingAudioFormat::Wav, sample_sink)
+    }
+
+    /// Like [`start_with_sink`](Self::start_with_sink), but records in `format`
+    /// (WAV or Ogg-Opus; see [`MeetingAudioFormat`]). `out_path` should carry
+    /// the matching extension ([`MeetingAudioFormat::extension`]); the recorder
+    /// does not rename it.
+    pub fn start_with_options(
+        &self,
+        device: Option<String>,
+        out_path: PathBuf,
+        format: MeetingAudioFormat,
+        sample_sink: Option<SampleSink>,
+    ) -> Result<u32, MeetingRecorderError> {
         if self.recording.load(Ordering::SeqCst) {
             return Err(MeetingRecorderError::AlreadyRecording);
         }
@@ -914,6 +1047,7 @@ impl MeetingRecorder {
         tx.send(RecCmd::Start {
             device,
             out_path,
+            format,
             sample_sink,
             reply: reply_tx,
         })
@@ -951,7 +1085,7 @@ impl MeetingRecorder {
             .map_err(|_| MeetingRecorderError::ThreadGone)
     }
 
-    /// Finalize the WAV and return `(path, duration_seconds, sample_rate)`.
+    /// Finalize the recording and return `(path, duration_seconds, sample_rate)`.
     pub fn stop(&self) -> Result<RecordingSummary, MeetingRecorderError> {
         if !self.recording.load(Ordering::SeqCst) {
             return Err(MeetingRecorderError::NotRecording);
@@ -999,6 +1133,7 @@ impl Drop for MeetingRecorder {
 fn start_on_thread(
     preferred: Option<String>,
     out_path: PathBuf,
+    format: MeetingAudioFormat,
     sample_sink: Option<SampleSink>,
     recording: &AtomicBool,
     paused: &Arc<AtomicBool>,
@@ -1037,7 +1172,7 @@ fn start_on_thread(
     // Arm the mic silence watchdog for this session at the capture rate.
     voiced.arm(sample_rate);
 
-    let sink = match WavSink::create(&out_path, sample_rate) {
+    let sink = match TrackSink::create(&out_path, sample_rate, format) {
         Ok(s) => s,
         Err(e) => {
             recording.store(false, Ordering::SeqCst);
@@ -1396,7 +1531,7 @@ mod tests {
     fn write_silence_appends_exactly_n_zero_samples() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("silence.wav");
-        let mut sink = WavSink::create(&path, 16_000).unwrap();
+        let mut sink = TrackSink::create(&path, 16_000, MeetingAudioFormat::Wav).unwrap();
         // Cross a block boundary to exercise the loop (BLOCK = 16_000).
         write_silence(&mut sink, 40_000).unwrap();
         assert_eq!(sink.samples_written(), 40_000);
@@ -1447,6 +1582,89 @@ mod tests {
             std::thread::yield_now();
         }
         track.finalize().unwrap();
+    }
+
+    #[test]
+    fn meeting_audio_format_parse_serialize_extension() {
+        assert_eq!(MeetingAudioFormat::default(), MeetingAudioFormat::Wav);
+        assert_eq!(MeetingAudioFormat::Wav.as_str(), "wav");
+        assert_eq!(MeetingAudioFormat::Opus.as_str(), "opus");
+        assert_eq!(MeetingAudioFormat::Wav.extension(), "wav");
+        assert_eq!(MeetingAudioFormat::Opus.extension(), "opus");
+
+        assert_eq!(
+            MeetingAudioFormat::parse("wav"),
+            Some(MeetingAudioFormat::Wav)
+        );
+        assert_eq!(
+            MeetingAudioFormat::parse("Opus"),
+            Some(MeetingAudioFormat::Opus)
+        );
+        assert_eq!(
+            MeetingAudioFormat::parse("OPUS"),
+            Some(MeetingAudioFormat::Opus)
+        );
+        assert_eq!(MeetingAudioFormat::parse("flac"), None);
+        assert_eq!(MeetingAudioFormat::parse(""), None);
+
+        // Serde uses the same lowercase names.
+        assert_eq!(
+            serde_json::to_string(&MeetingAudioFormat::Opus).unwrap(),
+            "\"opus\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MeetingAudioFormat>("\"wav\"").unwrap(),
+            MeetingAudioFormat::Wav
+        );
+        assert!(serde_json::from_str::<MeetingAudioFormat>("\"flac\"").is_err());
+    }
+
+    #[test]
+    fn system_track_opus_roundtrips_through_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.system.opus");
+        let track =
+            SystemTrackRecorder::create_with_format(&path, 16_000, MeetingAudioFormat::Opus)
+                .unwrap();
+        assert_eq!(track.out_path(), path.as_path());
+        let sender = track.sender();
+
+        // 1 s of a tone in 100 ms chunks, then an empty chunk (dropped).
+        let tone: Vec<f32> = (0..1_600)
+            .map(|i| 0.3 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin())
+            .collect();
+        for _ in 0..10 {
+            assert!(sender.push(&tone));
+        }
+        assert!(!sender.push(&[]));
+
+        let summary = track.finalize().unwrap();
+        assert_eq!(summary.wav_path, path);
+        assert_eq!(summary.sample_rate, 16_000);
+        assert!((summary.duration_seconds - 1.0).abs() < 1e-9);
+        assert!(summary.gaps.is_empty());
+
+        // The file decodes back to ~1 s of 16 kHz audio.
+        let (pcm, rate) = crate::opus_sink::decode_opus_to_pcm(&path).unwrap();
+        assert_eq!(rate, 16_000);
+        let drift = (pcm.len() as i64 - 16_000).abs();
+        assert!(drift <= 320, "decoded {} samples", pcm.len());
+
+        // Pushing after finalize reports false instead of erroring.
+        assert!(!sender.push(&tone));
+    }
+
+    #[test]
+    fn system_track_create_defaults_to_wav() {
+        // Behavior-neutral default: `create` still produces a PCM16 WAV.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("default.wav");
+        let track = SystemTrackRecorder::create(&path, 16_000).unwrap();
+        let sender = track.sender();
+        assert!(sender.push(&[0.5f32; 160]));
+        track.finalize().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
     }
 
     fn read_u32_le(bytes: &[u8], off: usize) -> u32 {
