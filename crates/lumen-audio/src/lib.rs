@@ -8,15 +8,17 @@
 
 pub mod audio;
 pub mod meeting_recorder;
+pub mod opus_sink;
 pub mod vad;
 pub mod wav_edit;
 
 pub use audio::{AudioCapture, AudioDeviceInfo, AudioError, CaptureResult};
 pub use meeting_recorder::{
-    live_tap_channel, repair_wav_header, LiveAudioPacket, LiveTapSender, MeetingRecorder,
-    MeetingRecorderError, RecordingSummary, RepairedWav, SampleSink, SystemTrackRecorder,
-    SystemTrackSender, WavSink, LIVE_TAP_CAPACITY,
+    live_tap_channel, repair_wav_header, LiveAudioPacket, LiveTapSender, MeetingAudioFormat,
+    MeetingRecorder, MeetingRecorderError, RecordingSummary, RepairedWav, SampleSink,
+    SystemTrackRecorder, SystemTrackSender, WavSink, LIVE_TAP_CAPACITY,
 };
+pub use opus_sink::{decode_opus_to_pcm, pcm_to_wav_bytes, OpusSink, OPUS_SAMPLE_RATE};
 pub use vad::{trim_trailing_silence, SilenceAutoStop, TimestampAutoStop, VadAction};
 #[cfg(feature = "silero")]
 pub use vad::{SileroVad, SileroVadError};

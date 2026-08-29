@@ -13,12 +13,17 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 hound = "3"
 same-file = "1"
+# Streaming Ogg-Opus meeting recording (pure-Rust ogg muxing + libopus via the
+# `opus` crate's vendored build; needs a C compiler at build time).
+ogg = "0.8"
+opus = "0.3"
 # Silero VAD via official sherpa-onnx bindings (downloads a prebuilt static
 # lib on first build — same mechanism as lumen-asr-engine).
 sherpa-onnx = { version = "1.13.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = { workspace = true }
 # Model-path resolution for the model-gated silero test.
 lumen-models = { path = "../lumen-models" }
 
