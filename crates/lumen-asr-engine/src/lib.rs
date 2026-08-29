@@ -7,7 +7,7 @@
 //! |--------|---------|---------|
 //! | [`SenseVoiceSherpaAsr`] | Local sherpa-onnx SenseVoice | `sherpa` (default) |
 //! | [`WhisperAsr`] | Local sherpa-onnx Whisper | `sherpa` (default) |
-//! | [`QwenAsr`] | Local Qwen3-ASR via persistent MLX Python worker | always |
+//! | [`QwenAsr`] | Local sherpa-onnx Qwen3-ASR | `sherpa` (default) |
 //! | `OpenAiAudioAsr` | OpenAI-compatible HTTP `/audio/transcriptions` | `cloud` |
 //! | macOS Speech.framework | Consumer-provided (lumen-navi platform layer) | — |
 //!
@@ -33,18 +33,15 @@ pub use audio::{
 };
 #[cfg(feature = "cloud")]
 pub use cloud_openai::{OpenAiAudioAsr, OpenAiAudioConfig};
-pub use diagnostics::{
-    AsrRuntimeDiagnostics, AsrTokenEvidence, QwenDecodeMode, QwenRuntimeMetrics,
-    QwenShadowCandidate, QwenShadowDiagnostics, QwenShadowScore, QwenShadowSpan, QwenShadowStatus,
-};
+pub use diagnostics::AsrRuntimeDiagnostics;
 pub use model_paths::{
     paraformer_offline_ready, paraformer_streaming_ready, qwen_ready, sensevoice_model_path,
     sensevoice_ready, sensevoice_tokens_path, whisper_decoder_path, whisper_encoder_path,
     whisper_ready, whisper_tokens_path, ParaformerOfflineModelPaths, ParaformerStreamingModelPaths,
-    SenseVoiceModelPaths, WhisperModelPaths,
+    QwenModelPaths, SenseVoiceModelPaths, WhisperModelPaths,
 };
 pub use paraformer::ParaformerAsr;
-pub use qwen::{QwenAsr, QwenAsrConfig, QwenShadowRequest, QwenShadowTerm};
+pub use qwen::{QwenAsr, QwenAsrConfig};
 pub use sensevoice::SenseVoiceSherpaAsr;
 pub use streaming::{
     StreamingAsrEngine, StreamingEndpointConfig, StreamingParaformerAsr, StreamingRecognizer,
@@ -295,8 +292,8 @@ pub fn model_identity_from_path(path: &Path) -> (Option<String>, Option<String>)
 
 /// Engine selector (config / UI). Superset of both products:
 ///
-/// - [`EngineKind::Qwen`] is the **local** Qwen3-ASR MLX worker (lumen-asr
-///   semantics). Cloud-hosted Qwen (DashScope etc.) is
+/// - [`EngineKind::Qwen`] is the **local** Qwen3-ASR sherpa-onnx engine
+///   (lumen-asr semantics). Cloud-hosted Qwen (DashScope etc.) is
 ///   [`EngineKind::OpenAiAudio`] with a `qwen_asr` engine label.
 /// - [`EngineKind::Speech`] is macOS Speech.framework; the engine itself is
 ///   built by the consumer (lumen-navi platform layer), this enum only
@@ -307,7 +304,7 @@ pub enum EngineKind {
     #[default]
     SenseVoice,
     Whisper,
-    /// Local Qwen3-ASR via MLX Python worker.
+    /// Local Qwen3-ASR via sherpa-onnx (offline, in-process).
     Qwen,
     /// Local sherpa-onnx offline Paraformer (greedy decoding + word
     /// timestamps; hotwords are unsupported by Paraformer).
@@ -336,10 +333,10 @@ impl EngineKind {
     /// Accepts every alias either product used.
     ///
     /// Behavior note: lumen-navi used to map `qwen` / `qwen3-asr` to its HTTP
-    /// path because it had no local worker; with the local worker available
-    /// here those names now mean [`EngineKind::Qwen`]. Explicit cloud-model
-    /// names (`qwen_asr`, `qwen-asr`, `qwen_asr_0.8b`) keep mapping to
-    /// [`EngineKind::OpenAiAudio`].
+    /// path because it had no local engine; with the local sherpa engine
+    /// available here those names now mean [`EngineKind::Qwen`]. Explicit
+    /// cloud-model names (`qwen_asr`, `qwen-asr`, `qwen_asr_0.8b`) keep
+    /// mapping to [`EngineKind::OpenAiAudio`].
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "sensevoice" | "sensevoice_sherpa" | "sherpa" | "local_sensevoice" => {
@@ -407,9 +404,9 @@ pub fn probe_status(kind: EngineKind, model_dir: Option<&Path>) -> EngineStatus 
                 ready,
                 model_dir: dir_display(model_dir),
                 detail: if ready {
-                    "Qwen3-ASR MLX snapshot ready".into()
+                    "Qwen3-ASR sherpa-onnx model ready".into()
                 } else {
-                    "missing config/weights/tokenizer files (or no model_dir provided)".into()
+                    "missing conv_frontend/encoder/decoder onnx + tokenizer files (or no model_dir provided)".into()
                 },
             }
         }
@@ -462,8 +459,6 @@ pub struct EngineBuildConfig {
     pub http_timeout_ms: u64,
     /// Label stored in transcript.v1 for HTTP engines.
     pub http_engine_label: String,
-    /// Python interpreter for [`EngineKind::Qwen`] (venv with mlx installed).
-    pub qwen_python: PathBuf,
     pub qwen_timeout_ms: u64,
 }
 
@@ -479,7 +474,6 @@ impl Default for EngineBuildConfig {
             http_model: "whisper-1".into(),
             http_timeout_ms: 120_000,
             http_engine_label: String::new(),
-            qwen_python: PathBuf::new(),
             qwen_timeout_ms: 120_000,
         }
     }
@@ -544,18 +538,20 @@ pub fn build_engine(cfg: &EngineBuildConfig) -> Result<Option<Arc<dyn AsrEngine>
         }
         EngineKind::Qwen => {
             if cfg.model_dir.as_os_str().is_empty() {
-                return Err("qwen requires model_dir (MLX snapshot)".into());
-            }
-            if cfg.qwen_python.as_os_str().is_empty() {
-                return Err("qwen requires qwen_python (interpreter with mlx installed)".into());
+                return Err("qwen requires model_dir (path resolution is consumer-side)".into());
             }
             let eng = QwenAsr::new(QwenAsrConfig::product(
-                cfg.qwen_python.clone(),
                 cfg.model_dir.clone(),
                 locale_to_lang_hint(&cfg.locale),
                 Duration::from_millis(cfg.qwen_timeout_ms.max(5_000)),
             ));
-            tracing::info!(dir = %cfg.model_dir.display(), "ASR engine: qwen (local MLX worker)");
+            if !eng.is_ready() {
+                return Err(format!(
+                    "Qwen3-ASR sherpa model not ready under {}",
+                    cfg.model_dir.display()
+                ));
+            }
+            tracing::info!(dir = %cfg.model_dir.display(), "ASR engine: qwen (sherpa-onnx)");
             Ok(Some(Arc::new(eng)))
         }
         EngineKind::OpenAiAudio => {

@@ -148,6 +148,14 @@ pub fn shared_silero_vad_dir(models_root: Option<&Path>) -> PathBuf {
     lumen_models_dir_with_override(models_root).join("silero-vad")
 }
 
+/// Canonical install dir for the sherpa-onnx Qwen3-ASR model under the
+/// cluster root: `<models>/qwen3-sherpa` (upstream archive layout:
+/// `conv_frontend.onnx`, `encoder.int8.onnx`, `decoder.int8.onnx`,
+/// `tokenizer/{vocab.json,merges.txt,tokenizer_config.json}`).
+pub fn shared_qwen3_sherpa_dir(models_root: Option<&Path>) -> PathBuf {
+    lumen_models_dir_with_override(models_root).join("qwen3-sherpa")
+}
+
 /// Offline Paraformer dir under the shared cluster root (`paraformer/offline`).
 ///
 /// Paraformer has no legacy per-app layout or env override, so this is simply
@@ -276,18 +284,23 @@ pub fn default_whisper_dir_with_root(models_root: Option<&Path>) -> PathBuf {
     shared
 }
 
-/// Resolve the Qwen3-ASR snapshot dir: app dir → huggingface cache → app dir.
+/// Qwen3-ASR sherpa dir under the shared cluster root (`qwen3-sherpa`).
+///
+/// Qwen3-ASR has no legacy per-app sherpa layout or env override (the old MLX
+/// snapshot dirs are a different runtime and are not reused), so this is the
+/// shared install target — ready or not — unless another ready candidate
+/// exists under the shared or legacy roots.
 pub fn default_qwen_dir() -> PathBuf {
-    let app_dir = qwen_app_model_dir();
-    if qwen_ready(&app_dir) {
-        return app_dir;
+    let shared = shared_qwen3_sherpa_dir(None);
+    if qwen_ready(&shared) {
+        return shared;
     }
     for (path, _) in qwen_discovery_paths(None) {
-        if path != app_dir && qwen_ready(&path) {
+        if path != shared && qwen_ready(&path) {
             return path;
         }
     }
-    app_dir
+    shared
 }
 
 /// Resolve the **first existing and ready** SenseVoice directory for any Lumen
@@ -321,19 +334,12 @@ pub fn resolve_sensevoice_dir(override_root: Option<&Path>) -> Option<PathBuf> {
         .find(|path| sensevoice_ready(path))
 }
 
-/// Resolve the **first existing and ready** Qwen3-ASR snapshot directory for
-/// any Lumen product to consume, or `None` when none is installed.
+/// Resolve the **first existing and ready** sherpa-onnx Qwen3-ASR directory
+/// for any Lumen product to consume, or `None` when none is installed.
 ///
-/// Resolution order:
-///
-/// 1. Shared cluster dir `lumen_models_dir()/qwen3-asr-0.6b-8bit` and any other
-///    ready first-level subdir under the shared root.
-/// 2. Legacy fallbacks (read-only, never moved): `LumenAsr/models/qwen3-asr-0.6b-8bit`,
-///    any ready `*qwen*` subdir under `Shandianshuo/models` / other legacy roots.
-/// 3. The Hugging Face MLX snapshot cache
-///    (`~/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-0.6B-8bit`).
-///
-/// `override_root` overrides the shared root.
+/// Resolution order: shared cluster dir `lumen_models_dir()/qwen3-sherpa` and
+/// any other ready first-level subdir under the shared root, then legacy
+/// roots (read-only, never moved). `override_root` overrides the shared root.
 pub fn resolve_qwen_asr_dir(override_root: Option<&Path>) -> Option<PathBuf> {
     qwen_discovery_paths(override_root)
         .into_iter()
@@ -362,8 +368,8 @@ fn whisper_discovery_paths(models_root: Option<&Path>) -> Vec<(PathBuf, &'static
     )
 }
 
-/// Canonical Qwen3-ASR snapshot directory name (matches the MLX model id).
-const QWEN_DIR_NAME: &str = "qwen3-asr-0.6b-8bit";
+/// Canonical sherpa-onnx Qwen3-ASR directory name under the shared root.
+const QWEN_DIR_NAME: &str = "qwen3-sherpa";
 
 /// Shared canonical dir first, then any other ready first-level subdir under
 /// the shared root, then legacy roots (canonical join plus any ready subdir,
@@ -397,54 +403,15 @@ fn shared_engine_discovery_paths(
     paths
 }
 
-/// Shared root (canonical + ready subdirs) first, then legacy app dirs
-/// (`LumenAsr` and any ready `*qwen*` subdir under `Shandianshuo` / other
-/// legacy roots), then the Hugging Face MLX snapshot cache.
+/// Shared root (canonical `qwen3-sherpa` + ready subdirs) first, then legacy
+/// roots and known coli cache packages — same shape as the other engines.
 fn qwen_discovery_paths(models_root: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
-    let shared_root = lumen_models_dir_with_override(models_root);
-    let mut paths = vec![(shared_root.join(QWEN_DIR_NAME), "lumen-shared")];
-    for path in ready_subdirs(&shared_root, qwen_ready) {
-        if path.file_name() != Some(OsStr::new(QWEN_DIR_NAME)) {
-            paths.push((path, "lumen-shared"));
-        }
-    }
-    let home = user_home_dir();
-    // Canonical legacy app dir (LumenAsr / .lumen-asr).
-    paths.push((qwen_app_model_dir(), "lumen-asr"));
-    // Any ready qwen package sitting under a legacy root under a non-canonical
-    // name (e.g. `Shandianshuo/models/qwen3-asr-...`).
-    for root in legacy_model_roots(&home) {
-        let source = legacy_source(&root);
-        for path in ready_subdirs(&root, qwen_ready) {
-            paths.push((path, source));
-        }
-    }
-    let snapshots = home
-        .join(".cache/huggingface/hub")
-        .join("models--mlx-community--Qwen3-ASR-0.6B-8bit")
-        .join("snapshots");
-    if let Ok(entries) = std::fs::read_dir(snapshots) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                paths.push((path, "huggingface-cache"));
-            }
-        }
-    }
-    paths
-}
-
-fn qwen_app_model_dir() -> PathBuf {
-    let home = user_home_dir();
-    #[cfg(target_os = "macos")]
-    {
-        home.join("Library/Application Support/LumenAsr/models")
-            .join(QWEN_DIR_NAME)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        home.join(".lumen-asr/models").join(QWEN_DIR_NAME)
-    }
+    shared_engine_discovery_paths(
+        models_root,
+        QWEN_DIR_NAME,
+        qwen_ready,
+        &["sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25"],
+    )
 }
 
 /// Scan known locations for ready (or placeholder shared) model dirs.
@@ -478,8 +445,10 @@ pub fn scan_model_candidates_with_root(models_root: Option<&Path>) -> Vec<ModelC
         let install_target = path == shared_whisper;
         push_candidate(&mut out, "whisper", path, source, install_target);
     }
+    let shared_qwen = shared_qwen3_sherpa_dir(models_root);
     for (path, source) in qwen_discovery_paths(models_root) {
-        push_candidate(&mut out, "qwen", path, source, false);
+        let install_target = path == shared_qwen;
+        push_candidate(&mut out, "qwen", path, source, install_target);
     }
     let mut seen = HashSet::new();
     out.retain(|candidate| seen.insert((candidate.engine.clone(), candidate.path.clone())));
@@ -545,36 +514,18 @@ pub fn whisper_ready(dir: &Path) -> bool {
         && whisper_tokens_path(dir).is_some()
 }
 
-/// Qwen3-ASR MLX snapshot readiness: config + (single or sharded) weights +
-/// tokenizer assets.
+/// Qwen3-ASR sherpa-onnx readiness (upstream archive layout):
+/// `conv_frontend.onnx` + int8 encoder/decoder + the `tokenizer/` assets.
 pub fn qwen_ready(dir: &Path) -> bool {
-    dir.join("config.json").is_file()
-        && (dir.join("model.safetensors").is_file() || qwen_sharded_weights_ready(dir))
-        && dir.join("vocab.json").is_file()
-        && dir.join("merges.txt").is_file()
-}
-
-fn qwen_sharded_weights_ready(dir: &Path) -> bool {
-    let Ok(contents) = std::fs::read(dir.join("model.safetensors.index.json")) else {
-        return false;
-    };
-    let Ok(index) = serde_json::from_slice::<serde_json::Value>(&contents) else {
-        return false;
-    };
-    let Some(weight_map) = index.get("weight_map").and_then(|value| value.as_object()) else {
-        return false;
-    };
-    let shards: HashSet<&str> = weight_map
-        .values()
-        .filter_map(|value| value.as_str())
-        .collect();
-    !shards.is_empty()
-        && shards.iter().all(|shard| {
-            let path = Path::new(shard);
-            path.components()
-                .all(|component| matches!(component, std::path::Component::Normal(_)))
-                && dir.join(path).is_file()
-        })
+    dir.join("conv_frontend.onnx").is_file()
+        && dir.join("encoder.int8.onnx").is_file()
+        && dir.join("decoder.int8.onnx").is_file()
+        && dir.join("tokenizer").join("vocab.json").is_file()
+        && dir.join("tokenizer").join("merges.txt").is_file()
+        && dir
+            .join("tokenizer")
+            .join("tokenizer_config.json")
+            .is_file()
 }
 
 pub fn sensevoice_model_path(dir: &Path) -> Option<PathBuf> {
@@ -703,37 +654,28 @@ mod tests {
     }
 
     #[test]
-    fn qwen_ready_requires_model_config_and_tokenizer_assets() {
-        let root = temp_dir("qwen-ready");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("config.json"), b"{}").unwrap();
-        std::fs::write(root.join("model.safetensors"), b"model").unwrap();
-        assert!(!qwen_ready(&root));
+    fn qwen_ready_requires_sherpa_model_and_tokenizer_assets() {
+        let dir = temp_dir("qwen-ready");
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        assert!(!qwen_ready(&dir));
 
-        std::fs::write(root.join("tokenizer_config.json"), b"{}").unwrap();
-        assert!(!qwen_ready(&root));
-        std::fs::write(root.join("vocab.json"), b"{}").unwrap();
-        assert!(!qwen_ready(&root));
-        std::fs::write(root.join("merges.txt"), b"").unwrap();
-        assert!(qwen_ready(&root));
+        std::fs::write(dir.join("conv_frontend.onnx"), b"cf").unwrap();
+        std::fs::write(dir.join("encoder.int8.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.int8.onnx"), b"d").unwrap();
+        assert!(!qwen_ready(&dir));
 
-        std::fs::remove_file(root.join("model.safetensors")).unwrap();
-        std::fs::write(
-            root.join("model.safetensors.index.json"),
-            br#"{
-                "weight_map": {
-                    "encoder": "model-00001-of-00002.safetensors",
-                    "decoder": "model-00002-of-00002.safetensors"
-                }
-            }"#,
-        )
-        .unwrap();
-        assert!(!qwen_ready(&root));
-        std::fs::write(root.join("model-00001-of-00002.safetensors"), b"model").unwrap();
-        assert!(!qwen_ready(&root));
-        std::fs::write(root.join("model-00002-of-00002.safetensors"), b"model").unwrap();
-        assert!(qwen_ready(&root));
-        let _ = std::fs::remove_dir_all(root);
+        std::fs::write(dir.join("tokenizer/vocab.json"), b"{}").unwrap();
+        std::fs::write(dir.join("tokenizer/merges.txt"), b"m").unwrap();
+        assert!(!qwen_ready(&dir));
+        std::fs::write(dir.join("tokenizer/tokenizer_config.json"), b"{}").unwrap();
+        assert!(qwen_ready(&dir));
+
+        // An old MLX snapshot layout is not a usable sherpa model.
+        std::fs::remove_dir_all(dir.join("tokenizer")).unwrap();
+        std::fs::write(dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"model").unwrap();
+        assert!(!qwen_ready(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     // --- roots and layout --------------------------------------------------
@@ -809,6 +751,15 @@ mod tests {
     fn silero_vad_shared_dir_is_under_models_root() {
         let root = temp_dir("silero-vad-root");
         assert_eq!(shared_silero_vad_dir(Some(&root)), root.join("silero-vad"));
+    }
+
+    #[test]
+    fn qwen3_sherpa_shared_dir_is_under_models_root() {
+        let root = temp_dir("qwen3-sherpa-root");
+        assert_eq!(
+            shared_qwen3_sherpa_dir(Some(&root)),
+            root.join("qwen3-sherpa")
+        );
     }
 
     #[test]
@@ -1011,13 +962,15 @@ mod tests {
         std::fs::write(dir.join("tokens.txt"), b"tokens").unwrap();
     }
 
-    /// Writes a ready Qwen3-ASR (single-weight) layout into `dir`.
+    /// Writes a ready sherpa-onnx Qwen3-ASR layout into `dir`.
     fn write_qwen(dir: &Path) {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("config.json"), b"{}").unwrap();
-        std::fs::write(dir.join("model.safetensors"), b"model").unwrap();
-        std::fs::write(dir.join("vocab.json"), b"{}").unwrap();
-        std::fs::write(dir.join("merges.txt"), b"").unwrap();
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        std::fs::write(dir.join("conv_frontend.onnx"), b"cf").unwrap();
+        std::fs::write(dir.join("encoder.int8.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.int8.onnx"), b"d").unwrap();
+        std::fs::write(dir.join("tokenizer/vocab.json"), b"{}").unwrap();
+        std::fs::write(dir.join("tokenizer/merges.txt"), b"m").unwrap();
+        std::fs::write(dir.join("tokenizer/tokenizer_config.json"), b"{}").unwrap();
     }
 
     /// Clears all inputs that could leak the tester's real machine into resolve.
@@ -1104,13 +1057,12 @@ mod tests {
         assert_eq!(resolve_qwen_asr_dir(Some(&root)), None);
 
         // (b) only legacy Shandianshuo/models/<name> has a ready qwen.
-        let legacy =
-            fake_home.join("Library/Application Support/Shandianshuo/models/qwen3-asr-0.6b-8bit");
+        let legacy = fake_home.join("Library/Application Support/Shandianshuo/models/qwen3-sherpa");
         write_qwen(&legacy);
         assert_eq!(resolve_qwen_asr_dir(Some(&root)), Some(legacy.clone()));
 
         // (c) shared root wins once a ready qwen is installed there.
-        let shared = root.join("qwen3-asr-0.6b-8bit");
+        let shared = root.join("qwen3-sherpa");
         write_qwen(&shared);
         assert_eq!(resolve_qwen_asr_dir(Some(&root)), Some(shared));
         let _ = std::fs::remove_dir_all(fake_home);

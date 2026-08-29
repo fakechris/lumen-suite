@@ -3,7 +3,7 @@ name = "lumen-asr-engine"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Shared ASR engine layer for Lumen products (SenseVoice/Whisper via sherpa-onnx, Qwen3-ASR MLX worker, OpenAI-compatible HTTP)"
+description = "Shared ASR engine layer for Lumen products (SenseVoice/Whisper/Qwen3-ASR via sherpa-onnx, MLX Whisper worker, OpenAI-compatible HTTP)"
 repository = "https://github.com/fakechris/lumen-suite"
 
 [dependencies]
