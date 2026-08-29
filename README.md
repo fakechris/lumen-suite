@@ -14,7 +14,7 @@ contracts/
   lumen-transcript.v1.schema.json  转录交换格式（含说话人/词级 timing）
 crates/
   lumen-models                     模型下载/路径解析/安装锁（统一 asr/navi/cut 三份实现）
-  lumen-asr-engine                 ASR 引擎层（sherpa-onnx SenseVoice/Whisper + MLX Qwen + cloud）
+  lumen-asr-engine                 ASR 引擎层（sherpa-onnx SenseVoice/Whisper/Qwen3-ASR + MLX Whisper + cloud）
 diar/                              说话人分离引擎（自 diar-rs 仓库整体并入，历史保留）
   crates/diar-rs                   Rust/ONNX diarization crate（workspace 成员，非默认构建：
                                    build.rs 需 Python 端 kaldi-native-fbank，用 -p diar-rs 构建）

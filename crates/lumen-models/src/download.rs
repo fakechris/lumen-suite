@@ -7,13 +7,15 @@
 //!
 //! One generic engine ([`download_model_package`]) backs every model; each
 //! model is described by a [`ModelPackage`]. SenseVoice, offline Paraformer,
-//! and streaming Paraformer ship as `.tar.bz2` archives (extracted with
-//! `tar -xjf`); Silero VAD ships as a single raw `.onnx` file that is verified
-//! against a pinned SHA256 + size before publishing.
+//! streaming Paraformer, and Qwen3-ASR ship as `.tar.bz2` archives (extracted
+//! with `tar -xjf`); Silero VAD ships as a single raw `.onnx` file. Newer
+//! packages carry a pinned SHA256 + size that is verified before any
+//! extraction or publish (fail closed).
 
 use crate::install_lock::ModelInstallLock;
 use crate::paths::{
-    paraformer_offline_ready, paraformer_streaming_ready, sensevoice_ready, silero_vad_ready,
+    paraformer_offline_ready, paraformer_streaming_ready, qwen_ready, sensevoice_ready,
+    silero_vad_ready,
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -55,6 +57,20 @@ pub const SILERO_VAD_SHA256: &str =
     "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6";
 pub const SILERO_VAD_BYTES: u64 = 643_854;
 
+/// Official sherpa-onnx Qwen3-ASR 0.6B int8 package (~838 MiB).
+///
+/// Extracts to `sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/` containing
+/// `conv_frontend.onnx`, `encoder.int8.onnx`, `decoder.int8.onnx` and
+/// `tokenizer/{vocab.json,merges.txt,tokenizer_config.json}`.
+pub const QWEN3_SHERPA_ARCHIVE_URL: &str =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2";
+pub const QWEN3_SHERPA_ARCHIVE_NAME: &str = "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2";
+/// Pinned integrity for [`QWEN3_SHERPA_ARCHIVE_URL`], verified after every
+/// download (fail closed, same contract as [`SILERO_VAD_SHA256`]).
+pub const QWEN3_SHERPA_SHA256: &str =
+    "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96";
+pub const QWEN3_SHERPA_BYTES: u64 = 878_702_423;
+
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
     /// `"waiting"`, `"downloading"`, `"extracting"` or `"done"`.
@@ -94,13 +110,17 @@ enum Publish {
 enum Payload {
     /// `.tar.bz2` archive, extracted with `tar -xjf` then published.
     TarBz2(Publish),
-    /// Single raw file downloaded as-is. Verified against the pinned
-    /// SHA256 + size, then renamed into `final_dir/file_name`.
-    RawFile {
-        file_name: &'static str,
-        sha256: &'static str,
-        bytes: u64,
-    },
+    /// Single raw file downloaded as-is, then renamed into
+    /// `final_dir/file_name`. Requires [`ModelPackage::download_pin`].
+    RawFile { file_name: &'static str },
+}
+
+/// Pinned integrity of the downloaded bytes (SHA256 + size), verified before
+/// any extraction or publish — fail closed on mismatch.
+#[derive(Debug, Clone, Copy)]
+struct DownloadPin {
+    sha256: &'static str,
+    bytes: u64,
 }
 
 /// A downloadable sherpa model package.
@@ -116,6 +136,9 @@ struct ModelPackage {
     display: &'static str,
     /// Readiness predicate for the final directory.
     ready: fn(&Path) -> bool,
+    /// Integrity pin for the downloaded bytes; `None` only for the legacy
+    /// packages that predate pinning.
+    download_pin: Option<DownloadPin>,
     payload: Payload,
 }
 
@@ -126,6 +149,7 @@ const SENSEVOICE_PACKAGE: ModelPackage = ModelPackage {
     slug: "sensevoice",
     display: "SenseVoice",
     ready: sensevoice_ready,
+    download_pin: None,
     payload: Payload::TarBz2(Publish::WholeDir),
 };
 
@@ -136,6 +160,7 @@ const PARAFORMER_OFFLINE_PACKAGE: ModelPackage = ModelPackage {
     slug: "paraformer-offline",
     display: "Paraformer (offline)",
     ready: paraformer_offline_ready,
+    download_pin: None,
     payload: Payload::TarBz2(Publish::SelectFiles(&[
         &["model.int8.onnx", "model.onnx"],
         &["tokens.txt"],
@@ -149,6 +174,7 @@ const PARAFORMER_STREAMING_PACKAGE: ModelPackage = ModelPackage {
     slug: "paraformer-streaming",
     display: "Paraformer (streaming)",
     ready: paraformer_streaming_ready,
+    download_pin: None,
     payload: Payload::TarBz2(Publish::SelectFiles(&[
         &["encoder.int8.onnx", "encoder.onnx"],
         &["decoder.int8.onnx", "decoder.onnx"],
@@ -163,11 +189,29 @@ const SILERO_VAD_PACKAGE: ModelPackage = ModelPackage {
     slug: "silero-vad",
     display: "Silero VAD",
     ready: silero_vad_ready,
-    payload: Payload::RawFile {
-        file_name: SILERO_VAD_FILE_NAME,
+    download_pin: Some(DownloadPin {
         sha256: SILERO_VAD_SHA256,
         bytes: SILERO_VAD_BYTES,
+    }),
+    payload: Payload::RawFile {
+        file_name: SILERO_VAD_FILE_NAME,
     },
+};
+
+const QWEN3_SHERPA_PACKAGE: ModelPackage = ModelPackage {
+    url: QWEN3_SHERPA_ARCHIVE_URL,
+    archive_name: QWEN3_SHERPA_ARCHIVE_NAME,
+    rel_dir: "qwen3-sherpa",
+    slug: "qwen3-sherpa",
+    display: "Qwen3-ASR (sherpa-onnx)",
+    ready: qwen_ready,
+    download_pin: Some(DownloadPin {
+        sha256: QWEN3_SHERPA_SHA256,
+        bytes: QWEN3_SHERPA_BYTES,
+    }),
+    // Whole upstream layout (incl. the `tokenizer/` subdir) is the installed
+    // layout, so the recognizer's tokenizer path is simply `<dir>/tokenizer`.
+    payload: Payload::TarBz2(Publish::WholeDir),
 };
 
 /// Install SenseVoice under `models_root/sensevoice`.
@@ -227,6 +271,22 @@ pub fn download_silero_vad_package(
     on_progress: impl FnMut(DownloadProgress),
 ) -> Result<PathBuf, DownloadError> {
     download_model_package(models_root, &SILERO_VAD_PACKAGE, cancel, on_progress)
+}
+
+/// Install the sherpa-onnx Qwen3-ASR model under `models_root/qwen3-sherpa`.
+///
+/// ~838 MiB archive; the "downloading" phase reports live byte counts (total
+/// = pinned [`QWEN3_SHERPA_BYTES`]) so UIs can render a real progress bar.
+/// The archive is verified against the pinned SHA256 + size before any
+/// extraction — fail closed on mismatch. Shares the cluster install lock and
+/// progress protocol with the other packages; short-circuits when already
+/// installed.
+pub fn download_qwen3_sherpa_package(
+    models_root: &Path,
+    cancel: &AtomicBool,
+    on_progress: impl FnMut(DownloadProgress),
+) -> Result<PathBuf, DownloadError> {
+    download_model_package(models_root, &QWEN3_SHERPA_PACKAGE, cancel, on_progress)
 }
 
 /// The generic install engine backing every [`ModelPackage`].
@@ -295,7 +355,7 @@ fn download_model_package(
         "downloading",
         &format!("Downloading {} model…", package.display),
         0,
-        None,
+        package.download_pin.map(|pin| pin.bytes),
     ));
 
     let archive_str = archive_path
@@ -305,6 +365,9 @@ fn download_model_package(
         .args(["-fL", "--progress-bar", "-o", archive_str, package.url])
         .spawn()
         .map_err(|error| DownloadError::Failed(format!("curl failed to start: {error}")))?;
+    // Report live byte counts while curl streams (the .part file grows in
+    // place); total comes from the pin when one exists.
+    let mut last_reported = 0u64;
     let status = loop {
         if cancel.load(Ordering::SeqCst) {
             let _ = child.kill();
@@ -313,7 +376,21 @@ fn download_model_package(
         }
         match child.try_wait()? {
             Some(status) => break status,
-            None => thread::sleep(Duration::from_millis(100)),
+            None => {
+                let downloaded = std::fs::metadata(&archive_path)
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                if downloaded > last_reported {
+                    last_reported = downloaded;
+                    on_progress(progress(
+                        "downloading",
+                        &format!("Downloading {} model…", package.display),
+                        downloaded,
+                        package.download_pin.map(|pin| pin.bytes),
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     };
     if !status.success() {
@@ -328,21 +405,20 @@ fn download_model_package(
         .map(|meta| meta.len())
         .unwrap_or(0);
 
+    // Fail closed: a corrupted or tampered download is removed with the
+    // scratch cleanup, never extracted or published.
+    if let Some(pin) = &package.download_pin {
+        on_progress(progress(
+            "extracting",
+            "Verifying download integrity…",
+            bytes,
+            Some(bytes),
+        ));
+        verify_pinned_file(&archive_path, pin.sha256, pin.bytes)?;
+    }
+
     let publish = match &package.payload {
-        Payload::RawFile {
-            file_name,
-            sha256,
-            bytes: expected_bytes,
-        } => {
-            on_progress(progress(
-                "extracting",
-                "Verifying download integrity…",
-                bytes,
-                Some(bytes),
-            ));
-            // Fail closed: a corrupted or tampered download is removed with
-            // the scratch cleanup, never published.
-            verify_pinned_file(&archive_path, sha256, *expected_bytes)?;
+        Payload::RawFile { file_name } => {
             std::fs::create_dir_all(&final_dir)?;
             let target = final_dir.join(file_name);
             // Same filesystem as the scratch archive, so the rename is atomic.
@@ -485,7 +561,7 @@ fn progress(phase: &str, message: &str, bytes: u64, total: Option<u64>) -> Downl
     }
 }
 
-/// Verify a downloaded raw file against its pinned size + SHA256.
+/// Verify a downloaded file against its pinned size + SHA256.
 fn verify_pinned_file(path: &Path, sha256: &str, bytes: u64) -> Result<(), DownloadError> {
     let actual_bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
     if actual_bytes != bytes {
@@ -594,6 +670,25 @@ mod tests {
         assert!(SILERO_VAD_FILE_NAME.ends_with(".onnx"));
         assert_eq!(SILERO_VAD_SHA256.len(), 64);
         assert!(SILERO_VAD_BYTES > 0);
+    }
+
+    #[test]
+    fn qwen3_sherpa_url_and_pin_look_right() {
+        assert!(QWEN3_SHERPA_ARCHIVE_URL.starts_with("https://"));
+        assert!(QWEN3_SHERPA_ARCHIVE_URL.ends_with(QWEN3_SHERPA_ARCHIVE_NAME));
+        assert!(QWEN3_SHERPA_ARCHIVE_NAME.ends_with(".tar.bz2"));
+        assert_eq!(QWEN3_SHERPA_SHA256.len(), 64);
+    }
+
+    #[test]
+    fn pinned_packages_have_consistent_pins() {
+        for package in [&SILERO_VAD_PACKAGE, &QWEN3_SHERPA_PACKAGE] {
+            let pin = package
+                .download_pin
+                .expect("newer packages must pin their download");
+            assert_eq!(pin.sha256.len(), 64);
+            assert!(pin.bytes > 0);
+        }
     }
 
     /// Extract the tar publish mode of a package (panics for raw-file ones).
@@ -850,6 +945,84 @@ mod tests {
         // Idempotent: a second run short-circuits without network.
         let mut phases = Vec::new();
         download_silero_vad_package(&root, &cancel, |p| phases.push(p.phase)).unwrap();
+        assert_eq!(phases, vec!["done".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Write the installed (== upstream archive) sherpa Qwen3-ASR layout.
+    fn write_qwen3_sherpa(dir: &Path) {
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        std::fs::write(dir.join("conv_frontend.onnx"), b"cf").unwrap();
+        std::fs::write(dir.join("encoder.int8.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.int8.onnx"), b"d").unwrap();
+        std::fs::write(dir.join("tokenizer/vocab.json"), b"{}").unwrap();
+        std::fs::write(dir.join("tokenizer/merges.txt"), b"m").unwrap();
+        std::fs::write(dir.join("tokenizer/tokenizer_config.json"), b"{}").unwrap();
+    }
+
+    #[test]
+    fn qwen3_sherpa_already_installed_short_circuits() {
+        let root = temp_dir("download-qwen3-sherpa-ready");
+        let dir = root.join("qwen3-sherpa");
+        write_qwen3_sherpa(&dir);
+
+        let cancel = AtomicBool::new(false);
+        let mut phases = Vec::new();
+        let installed =
+            download_qwen3_sherpa_package(&root, &cancel, |p| phases.push(p.phase)).unwrap();
+
+        assert_eq!(installed, dir);
+        assert_eq!(phases, vec!["done".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn qwen3_sherpa_publish_keeps_upstream_layout() {
+        // Simulate the extracted prefix dir (tokenizer/ subdir + test wavs).
+        let root = temp_dir("publish-qwen3-sherpa");
+        let found = root.join("sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25");
+        write_qwen3_sherpa(&found);
+        std::fs::create_dir_all(found.join("test_wavs")).unwrap();
+        std::fs::write(found.join("test_wavs/0.wav"), b"wav").unwrap();
+        std::fs::write(found.join("README.md"), b"readme").unwrap();
+
+        let final_dir = root.join("qwen3-sherpa");
+        let staging = root.join("_staging");
+        publish_package(
+            &found,
+            &final_dir,
+            publish_of(&QWEN3_SHERPA_PACKAGE),
+            &staging,
+        )
+        .unwrap();
+
+        assert!(qwen_ready(&final_dir));
+        assert!(final_dir.join("conv_frontend.onnx").is_file());
+        assert!(final_dir.join("tokenizer/vocab.json").is_file());
+        assert!(!found.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Real end-to-end download (~838 MiB) against the pinned URL. Ignored by
+    /// default; run explicitly to validate the download path:
+    /// `cargo test -p lumen-models -- --ignored qwen3_sherpa_real_download`.
+    #[test]
+    #[ignore]
+    fn qwen3_sherpa_real_download_verifies_and_installs() {
+        let root = temp_dir("qwen3-sherpa-real-download");
+        let cancel = AtomicBool::new(false);
+        let mut saw_byte_progress = false;
+        let installed = download_qwen3_sherpa_package(&root, &cancel, |p| {
+            if p.phase == "downloading" && p.bytes > 0 && p.total == Some(QWEN3_SHERPA_BYTES) {
+                saw_byte_progress = true;
+            }
+        })
+        .unwrap();
+        assert!(saw_byte_progress, "expected live byte progress events");
+        assert!(qwen_ready(&installed));
+        // Idempotent: a second run short-circuits without network.
+        let mut phases = Vec::new();
+        download_qwen3_sherpa_package(&root, &cancel, |p| phases.push(p.phase)).unwrap();
         assert_eq!(phases, vec!["done".to_string()]);
         let _ = std::fs::remove_dir_all(root);
     }

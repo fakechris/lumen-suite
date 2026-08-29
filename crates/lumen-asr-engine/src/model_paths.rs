@@ -5,7 +5,6 @@
 //! `lumen-models` crate). Everything here operates on a directory the caller
 //! already chose.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Explicit SenseVoice model files.
@@ -147,35 +146,48 @@ pub fn whisper_ready(dir: &Path) -> bool {
         && whisper_tokens_path(dir).is_some()
 }
 
-/// Qwen3-ASR MLX snapshot readiness (config + weights + tokenizer files).
-pub fn qwen_ready(dir: &Path) -> bool {
-    dir.join("config.json").is_file()
-        && (dir.join("model.safetensors").is_file() || qwen_sharded_weights_ready(dir))
-        && dir.join("vocab.json").is_file()
-        && dir.join("merges.txt").is_file()
+/// Explicit sherpa-onnx Qwen3-ASR model files.
+///
+/// Directory convention (installed by lumen-models from the official
+/// `sherpa-onnx-qwen3-asr-0.6B-int8` archive):
+/// `<models>/qwen3-sherpa/{conv_frontend.onnx,encoder.int8.onnx,
+/// decoder.int8.onnx,tokenizer/{vocab.json,merges.txt,tokenizer_config.json}}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QwenModelPaths {
+    pub conv_frontend: PathBuf,
+    pub encoder: PathBuf,
+    pub decoder: PathBuf,
+    /// Directory holding `vocab.json` / `merges.txt` / `tokenizer_config.json`
+    /// (the `tokenizer/` subdir of the model directory).
+    pub tokenizer_dir: PathBuf,
 }
 
-fn qwen_sharded_weights_ready(dir: &Path) -> bool {
-    let Ok(contents) = std::fs::read(dir.join("model.safetensors.index.json")) else {
-        return false;
-    };
-    let Ok(index) = serde_json::from_slice::<serde_json::Value>(&contents) else {
-        return false;
-    };
-    let Some(weight_map) = index.get("weight_map").and_then(|value| value.as_object()) else {
-        return false;
-    };
-    let shards: HashSet<&str> = weight_map
-        .values()
-        .filter_map(|value| value.as_str())
-        .collect();
-    !shards.is_empty()
-        && shards.iter().all(|shard| {
-            let path = Path::new(shard);
-            path.components()
-                .all(|component| matches!(component, std::path::Component::Normal(_)))
-                && dir.join(path).is_file()
-        })
+impl QwenModelPaths {
+    /// Probe `dir` for the known sherpa-onnx Qwen3-ASR layout.
+    pub fn discover(dir: &Path) -> Option<Self> {
+        let paths = Self {
+            conv_frontend: dir.join("conv_frontend.onnx"),
+            encoder: dir.join("encoder.int8.onnx"),
+            decoder: dir.join("decoder.int8.onnx"),
+            tokenizer_dir: dir.join("tokenizer"),
+        };
+        paths.is_ready().then_some(paths)
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.conv_frontend.is_file()
+            && self.encoder.is_file()
+            && self.decoder.is_file()
+            && self.tokenizer_dir.join("vocab.json").is_file()
+            && self.tokenizer_dir.join("merges.txt").is_file()
+            && self.tokenizer_dir.join("tokenizer_config.json").is_file()
+    }
+}
+
+/// sherpa-onnx Qwen3-ASR readiness: conv_frontend + int8 encoder/decoder +
+/// the `tokenizer/` assets.
+pub fn qwen_ready(dir: &Path) -> bool {
+    QwenModelPaths::discover(dir).is_some()
 }
 
 pub fn sensevoice_model_path(dir: &Path) -> Option<PathBuf> {
@@ -270,6 +282,28 @@ mod tests {
         assert!(SenseVoiceModelPaths::discover(&dir).is_none());
         assert!(ParaformerOfflineModelPaths::discover(&dir).is_none());
         assert!(ParaformerStreamingModelPaths::discover(&dir).is_none());
+        assert!(QwenModelPaths::discover(&dir).is_none());
+    }
+
+    #[test]
+    fn qwen_discovery_requires_full_sherpa_layout() {
+        let dir = temp_dir("qwen-sherpa");
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        assert!(QwenModelPaths::discover(&dir).is_none());
+        std::fs::write(dir.join("conv_frontend.onnx"), b"cf").unwrap();
+        std::fs::write(dir.join("encoder.int8.onnx"), b"e").unwrap();
+        std::fs::write(dir.join("decoder.int8.onnx"), b"d").unwrap();
+        assert!(QwenModelPaths::discover(&dir).is_none());
+        std::fs::write(dir.join("tokenizer/vocab.json"), b"{}").unwrap();
+        std::fs::write(dir.join("tokenizer/merges.txt"), b"m").unwrap();
+        assert!(QwenModelPaths::discover(&dir).is_none());
+        std::fs::write(dir.join("tokenizer/tokenizer_config.json"), b"{}").unwrap();
+
+        let paths = QwenModelPaths::discover(&dir).unwrap();
+        assert!(paths.is_ready());
+        assert_eq!(paths.tokenizer_dir, dir.join("tokenizer"));
+        assert!(qwen_ready(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
