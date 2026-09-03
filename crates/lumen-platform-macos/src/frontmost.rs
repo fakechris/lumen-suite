@@ -18,24 +18,45 @@ impl FrontmostAppProbe for MacFrontmost {
 /// Callers that only need "which app is in front" (e.g. an audio-tap target
 /// picker) must use this one.
 pub fn frontmost_app_basic() -> Option<FrontmostApp> {
-    frontmost_native().or_else(frontmost_osascript)
+    #[cfg(target_os = "macos")]
+    {
+        objc2::rc::autoreleasepool(|_pool| frontmost_native().or_else(frontmost_osascript))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        frontmost_native().or_else(frontmost_osascript)
+    }
 }
 
 pub fn frontmost_app() -> Option<FrontmostApp> {
-    frontmost_native()
-        .or_else(frontmost_osascript)
-        .map(|mut f| {
-            // For browsers, enrich with the active tab URL (per-website time
-            // tracking). Done here so every construction path benefits. Only
-            // spawned when the bundle looks like a scriptable browser; cheap
-            // for non-browsers (early return).
-            if let Some(ref bid) = f.bundle_id {
-                if is_scriptable_browser(bid) {
-                    f.tab_url = browser_tab_url(bid);
-                }
-            }
-            f
+    #[cfg(target_os = "macos")]
+    {
+        objc2::rc::autoreleasepool(|_pool| {
+            frontmost_native()
+                .or_else(frontmost_osascript)
+                .map(|mut f| {
+                    if let Some(ref bid) = f.bundle_id {
+                        if is_scriptable_browser(bid) {
+                            f.tab_url = browser_tab_url(bid);
+                        }
+                    }
+                    f
+                })
         })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        frontmost_native()
+            .or_else(frontmost_osascript)
+            .map(|mut f| {
+                if let Some(ref bid) = f.bundle_id {
+                    if is_scriptable_browser(bid) {
+                        f.tab_url = browser_tab_url(bid);
+                    }
+                }
+                f
+            })
+    }
 }
 
 /// Bundle ids of browsers that expose the active tab URL via AppleScript.
@@ -267,65 +288,67 @@ extern "C" {
 
 #[cfg(target_os = "macos")]
 fn frontmost_native() -> Option<FrontmostApp> {
-    // CGWindowList is the source of truth for background processes (daemons).
-    // NSWorkspace.frontmostApplication() returns the caller's own bundle from a
-    // child process, not the user's actual focused window. Try the window list
-    // first; resolve bundle id from the pid via NSRunningApplication.
-    if let Some((owner_name, pid, window_id)) = frontmost_via_windowlist() {
-        let meta = running_app_meta(pid);
-        let app_name = meta
-            .localized_name
+    objc2::rc::autoreleasepool(|_pool| {
+        // CGWindowList is the source of truth for background processes (daemons).
+        // NSWorkspace.frontmostApplication() returns the caller's own bundle from a
+        // child process, not the user's actual focused window. Try the window list
+        // first; resolve bundle id from the pid via NSRunningApplication.
+        if let Some((owner_name, pid, window_id)) = frontmost_via_windowlist() {
+            let meta = running_app_meta(pid);
+            let app_name = meta
+                .localized_name
+                .filter(|s| !s.is_empty())
+                .unwrap_or(owner_name);
+            let window_title = crate::ax::focused_window_title(pid);
+            return Some(FrontmostApp {
+                app_name,
+                bundle_id: meta.bundle_id,
+                window_title,
+                ls_category_type: meta.ls_category_type,
+                tab_url: None,
+                pid: Some(pid),
+                window_id,
+            });
+        }
+
+        // Fallback: NSWorkspace (correct when the caller is itself the frontmost app,
+        // e.g. the selection popup path).
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::NSString;
+
+        let ws = NSWorkspace::sharedWorkspace();
+        let app = ws.frontmostApplication()?;
+        let app_name = app
+            .localizedName()
+            .map(|s: objc2::rc::Retained<NSString>| s.to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or(owner_name);
-        let window_title = crate::ax::focused_window_title(pid);
-        return Some(FrontmostApp {
+            .unwrap_or_else(|| "unknown".into());
+        let bundle_id = app
+            .bundleIdentifier()
+            .map(|s: objc2::rc::Retained<NSString>| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        let pid = app.processIdentifier();
+        let window_title = if pid > 0 {
+            crate::ax::focused_window_title(pid)
+        } else {
+            None
+        };
+        let ls_category_type = if pid > 0 {
+            running_app_meta(pid).ls_category_type
+        } else {
+            None
+        };
+
+        Some(FrontmostApp {
             app_name,
-            bundle_id: meta.bundle_id,
+            bundle_id,
             window_title,
-            ls_category_type: meta.ls_category_type,
+            ls_category_type,
             tab_url: None,
-            pid: Some(pid),
-            window_id,
-        });
-    }
-
-    // Fallback: NSWorkspace (correct when the caller is itself the frontmost app,
-    // e.g. the selection popup path).
-    use objc2_app_kit::NSWorkspace;
-    use objc2_foundation::NSString;
-
-    let ws = NSWorkspace::sharedWorkspace();
-    let app = ws.frontmostApplication()?;
-    let app_name = app
-        .localizedName()
-        .map(|s: objc2::rc::Retained<NSString>| s.to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into());
-    let bundle_id = app
-        .bundleIdentifier()
-        .map(|s: objc2::rc::Retained<NSString>| s.to_string())
-        .filter(|s| !s.is_empty());
-
-    let pid = app.processIdentifier();
-    let window_title = if pid > 0 {
-        crate::ax::focused_window_title(pid)
-    } else {
-        None
-    };
-    let ls_category_type = if pid > 0 {
-        running_app_meta(pid).ls_category_type
-    } else {
-        None
-    };
-
-    Some(FrontmostApp {
-        app_name,
-        bundle_id,
-        window_title,
-        ls_category_type,
-        tab_url: None,
-        pid: if pid > 0 { Some(pid) } else { None },
-        window_id: None,
+            pid: if pid > 0 { Some(pid) } else { None },
+            window_id: None,
+        })
     })
 }
 
@@ -339,40 +362,58 @@ struct RunningAppMeta {
 /// Resolve display name, bundle id, and Info.plist category for a pid.
 #[cfg(target_os = "macos")]
 fn running_app_meta(pid: i32) -> RunningAppMeta {
-    use objc2_app_kit::NSRunningApplication;
-    use objc2_foundation::NSString;
+    objc2::rc::autoreleasepool(|_pool| {
+        use objc2_app_kit::NSRunningApplication;
+        use objc2_foundation::NSString;
 
-    let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
-        return RunningAppMeta {
-            localized_name: None,
-            bundle_id: None,
-            ls_category_type: None,
+        let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
+            return RunningAppMeta {
+                localized_name: None,
+                bundle_id: None,
+                ls_category_type: None,
+            };
         };
-    };
-    let localized_name = app
-        .localizedName()
-        .map(|s: objc2::rc::Retained<NSString>| s.to_string())
-        .filter(|s| !s.is_empty());
-    let bundle_id = app
-        .bundleIdentifier()
-        .map(|s: objc2::rc::Retained<NSString>| s.to_string())
-        .filter(|s| !s.is_empty());
-    let ls_category_type = app.bundleURL().and_then(|url| {
-        let path = url.path()?.to_string();
-        ls_application_category_type(&path)
-    });
-    RunningAppMeta {
-        localized_name,
-        bundle_id,
-        ls_category_type,
-    }
+        let localized_name = app
+            .localizedName()
+            .map(|s: objc2::rc::Retained<NSString>| s.to_string())
+            .filter(|s| !s.is_empty());
+        let bundle_id = app
+            .bundleIdentifier()
+            .map(|s: objc2::rc::Retained<NSString>| s.to_string())
+            .filter(|s| !s.is_empty());
+        let ls_category_type = app.bundleURL().and_then(|url| {
+            let path = url.path()?.to_string();
+            ls_application_category_type(&path)
+        });
+        RunningAppMeta {
+            localized_name,
+            bundle_id,
+            ls_category_type,
+        }
+    })
 }
 
 /// Read `LSApplicationCategoryType` from an `.app` bundle path.
 #[cfg(target_os = "macos")]
 fn ls_application_category_type(app_path: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    {
+        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if let Some(cached) = cache.get(app_path) {
+            return cached.clone();
+        }
+    }
+
     let plist = std::path::Path::new(app_path).join("Contents/Info.plist");
     if !plist.is_file() {
+        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cache) = guard.as_mut() {
+            cache.insert(app_path.to_string(), None);
+        }
         return None;
     }
     let output = std::process::Command::new("/usr/libexec/PlistBuddy")
@@ -381,15 +422,23 @@ fn ls_application_category_type(app_path: &str) -> Option<String> {
         .arg(&plist)
         .output()
         .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() || value.starts_with("Print:") || value.contains("Does Not Exist") {
+    let value = if !output.status.success() {
         None
     } else {
-        Some(value)
+        let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if val.is_empty() || val.starts_with("Print:") || val.contains("Does Not Exist") {
+            None
+        } else {
+            Some(val)
+        }
+    };
+    {
+        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cache) = guard.as_mut() {
+            cache.insert(app_path.to_string(), value.clone());
+        }
     }
+    value
 }
 
 #[cfg(not(target_os = "macos"))]

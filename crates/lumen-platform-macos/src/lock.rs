@@ -34,6 +34,7 @@ pub fn is_screen_locked() -> bool {
             let key = cfstr("CGSSessionScreenIsLocked");
             let mut value: *const std::ffi::c_void = std::ptr::null();
             let found = CFDictionaryGetValueIfPresent(dict, key, &mut value);
+            CFRelease(key as *const _);
             CFRelease(dict as *const _);
             if found == 0 || value.is_null() {
                 return false;
