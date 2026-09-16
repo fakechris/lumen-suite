@@ -276,6 +276,81 @@ fn silhouette_cosine(xn: &[f64], n: usize, dim: usize, labels: &[u32]) -> f64 {
     sil_sum / n as f64
 }
 
+/// Iteratively merge closest pairs of clusters (by centroid cosine similarity) until k <= target_k.
+pub fn merge_closest_clusters(
+    x_n: &[f64],
+    n: usize,
+    dim: usize,
+    labels: &mut [u32],
+    target_k: usize,
+) {
+    loop {
+        let mut used: Vec<u32> = labels.to_vec();
+        used.sort_unstable();
+        used.dedup();
+        let k = used.len();
+        if k <= target_k {
+            break;
+        }
+        let map: std::collections::BTreeMap<u32, usize> = used
+            .iter()
+            .enumerate()
+            .map(|(i, &u)| (u, i))
+            .collect();
+        let mut cents = vec![vec![0.0f64; dim]; k];
+        let mut counts = vec![0.0f64; k];
+        for i in 0..n {
+            let l = map[&labels[i]];
+            for d in 0..dim {
+                cents[l][d] += x_n[i * dim + d];
+            }
+            counts[l] += 1.0;
+        }
+        for (c, cnt) in cents.iter_mut().zip(&counts) {
+            let inv = 1.0 / cnt.max(1e-12);
+            for v in c.iter_mut() {
+                *v *= inv;
+            }
+            let norm = c.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-12);
+            for v in c.iter_mut() {
+                *v /= norm;
+            }
+        }
+        let mut best_sim = -2.0f64;
+        let mut best_pair = (0, 1);
+        for i in 0..k - 1 {
+            for j in i + 1..k {
+                let mut sim = 0.0f64;
+                for d in 0..dim {
+                    sim += cents[i][d] * cents[j][d];
+                }
+                if sim > best_sim {
+                    best_sim = sim;
+                    best_pair = (i, j);
+                }
+            }
+        }
+        let (merge_into, to_remove) = (used[best_pair.0], used[best_pair.1]);
+        for l in labels.iter_mut() {
+            if *l == to_remove {
+                *l = merge_into;
+            }
+        }
+        // renumber
+        let mut u2 = labels.to_vec();
+        u2.sort_unstable();
+        u2.dedup();
+        let m2: std::collections::BTreeMap<u32, u32> = u2
+            .iter()
+            .enumerate()
+            .map(|(i, &u)| (u, i as u32))
+            .collect();
+        for l in labels.iter_mut() {
+            *l = m2[l];
+        }
+    }
+}
+
 /// Cosine AHC matching Python `ahc_cosine`.
 ///
 /// - `force_k`: if Some, maxclust cut only (+ absorb)
@@ -299,9 +374,11 @@ pub fn ahc_cosine(
     let mut condensed = condensed_cosine_dist(&xn, n, dim);
     let dend = linkage(&mut condensed, n, Method::Average);
     let steps = dend.steps();
+    let min_size = 3.max(8.min(n / 20));
 
     let labels = if let Some(k) = force_k {
-        labels_maxclust(steps, n, k.min(n))
+        let raw = labels_maxclust(steps, n, k.min(n));
+        absorb_small(&xn, n, dim, &raw, min_size)
     } else {
         // pairwise cosine scores for twoGMM (not distances)
         let mut scores = Vec::with_capacity(n * (n - 1) / 2);
@@ -316,28 +393,45 @@ pub fn ahc_cosine(
         }
         let thr = two_gmm_calib_lin(&scores, 20);
         let cut = (1.0 - thr).max(1e-6);
-        let mut labels = labels_distance_cut(steps, n, cut);
+        let raw_labels = labels_distance_cut(steps, n, cut);
+        let mut labels = absorb_small(&xn, n, dim, &raw_labels, min_size);
         let k = labels.iter().copied().max().unwrap_or(0) as usize + 1;
-        if k > max_speakers || k < 2 {
+        eprintln!("  two_gmm thr={:.4} cut={:.4} post_absorb_k={}", thr, cut, k);
+
+        if k > max_speakers {
+            eprintln!("  merging {} clusters down to max_speakers={}", k, max_speakers);
+            merge_closest_clusters(&xn, n, dim, &mut labels, max_speakers);
+        } else if k < 2 {
             let mut best_k = 2usize;
             let mut best_sil = -1.0f64;
+            let mut best_labels = labels_maxclust(steps, n, 2);
             let kmax = max_speakers.min(n);
             for kk in 2..=kmax {
                 let lab_k = labels_maxclust(steps, n, kk);
-                let sil = silhouette_cosine(&xn, n, dim, &lab_k);
+                let lab_absorbed = absorb_small(&xn, n, dim, &lab_k, min_size);
+                let k_abs = lab_absorbed.iter().copied().max().unwrap_or(0) as usize + 1;
+                if k_abs < 2 {
+                    continue;
+                }
+                let sil = silhouette_cosine(&xn, n, dim, &lab_absorbed);
                 if sil > best_sil {
                     best_sil = sil;
                     best_k = kk;
+                    best_labels = lab_absorbed;
                 }
             }
-            eprintln!("  AHC silhouette best_k={best_k} sil={best_sil:.4}");
-            labels = labels_maxclust(steps, n, best_k);
+            if best_sil > -1.0 {
+                eprintln!("  AHC silhouette best_k={} sil={:.4}", best_k, best_sil);
+                labels = best_labels;
+            } else {
+                eprintln!("  AHC single speaker confirmed");
+                labels = vec![0; n];
+            }
         }
         labels
     };
 
-    let min_size = 3.max(8.min(n / 20));
-    Ok(absorb_small(&xn, n, dim, &labels, min_size))
+    Ok(labels)
 }
 
 #[cfg(test)]
@@ -350,4 +444,24 @@ mod tests {
         let thr = two_gmm_calib_lin(&s, 20);
         assert!(thr.is_finite());
     }
+
+    #[test]
+    fn merge_closest_clusters_reduces_k() {
+        // 3 clusters in 2D: cluster 0 and 1 close, cluster 2 far
+        let n = 6;
+        let dim = 2;
+        let x = vec![
+            1.0, 0.0,
+            1.0, 0.1,
+            0.9, 0.1,
+            0.0, 1.0,
+            0.0, 0.9,
+            -1.0, 0.0,
+        ];
+        let mut labels = vec![0, 0, 1, 2, 2, 3];
+        merge_closest_clusters(&x, n, dim, &mut labels, 2);
+        let k = labels.iter().copied().max().unwrap() + 1;
+        assert_eq!(k, 2);
+    }
 }
+
