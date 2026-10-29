@@ -22,6 +22,8 @@ pub struct OpenAiAudioConfig {
     pub max_audio_bytes: usize,
     /// Engine label written into results (e.g. `openai_audio`, `qwen_asr`).
     pub engine_label: String,
+    /// Optional prompt hint to guide model style or vocabulary context.
+    pub prompt: Option<String>,
 }
 
 impl Default for OpenAiAudioConfig {
@@ -29,11 +31,12 @@ impl Default for OpenAiAudioConfig {
         Self {
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
-            model: "whisper-1".into(),
+            model: "gpt-transcribe".into(),
             timeout: Duration::from_secs(120),
             language: None,
             max_audio_bytes: 8 * 1024 * 1024,
             engine_label: "openai_audio".into(),
+            prompt: None,
         }
     }
 }
@@ -94,6 +97,24 @@ impl AsrEngine for OpenAiAudioAsr {
             .part("file", part)
             .text("model", self.config.model.clone());
 
+        let is_diarize = self.config.model.contains("diarize");
+        if is_diarize {
+            form = form.text("response_format", "diarized_json");
+            form = form.text("chunking_strategy", "auto");
+        } else {
+            let prompt_text = if !req.hotwords.is_empty() {
+                Some(req.hotwords.join(", "))
+            } else {
+                self.config.prompt.clone()
+            };
+            if let Some(p) = prompt_text.filter(|s| !s.trim().is_empty()) {
+                form = form.text("prompt", p);
+            }
+            if !req.hotwords.is_empty() && self.config.model.contains("gpt-transcribe") {
+                form = form.text("keywords", req.hotwords.join(", "));
+            }
+        }
+
         let lang = req
             .language_hint
             .clone()
@@ -123,12 +144,39 @@ impl AsrEngine for OpenAiAudioAsr {
             .json()
             .await
             .map_err(|_| AsrError::Inference("malformed provider response".into()))?;
-        let text = v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+
+        let text = if is_diarize {
+            if let Some(segs) = v.get("segments").and_then(|s| s.as_array()) {
+                let mut formatted = String::new();
+                for seg in segs {
+                    let spk = seg.get("speaker").and_then(|s| s.as_str()).unwrap_or("");
+                    let seg_text = seg.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+                    if !seg_text.is_empty() {
+                        if !formatted.is_empty() {
+                            formatted.push('\n');
+                        }
+                        if !spk.is_empty() {
+                            formatted.push_str(&format!("{spk}: {seg_text}"));
+                        } else {
+                            formatted.push_str(seg_text);
+                        }
+                    }
+                }
+                if !formatted.is_empty() {
+                    formatted
+                } else {
+                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").trim().to_string()
+                }
+            } else {
+                v.get("text").and_then(|t| t.as_str()).unwrap_or("").trim().to_string()
+            }
+        } else {
+            v.get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
 
         let mut result = AsrResult::new(text, AsrEngineId::OpenAiAudio);
         result.engine_label = self.config.engine_label.clone();
@@ -137,3 +185,52 @@ impl AsrEngine for OpenAiAudioAsr {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_to_gpt_transcribe() {
+        let cfg = OpenAiAudioConfig::default();
+        assert_eq!(cfg.model, "gpt-transcribe");
+        assert_eq!(cfg.base_url, "https://api.openai.com/v1");
+        assert!(cfg.prompt.is_none());
+    }
+
+    #[test]
+    fn parse_diarized_json_segments() {
+        let json: serde_json::Value = serde_json::json!({
+            "text": "Hello world. How are you?",
+            "segments": [
+                {
+                    "speaker": "A",
+                    "text": "Hello world."
+                },
+                {
+                    "speaker": "B",
+                    "text": "How are you?"
+                }
+            ]
+        });
+
+        let segs = json.get("segments").unwrap().as_array().unwrap();
+        let mut formatted = String::new();
+        for seg in segs {
+            let spk = seg.get("speaker").and_then(|s| s.as_str()).unwrap_or("");
+            let seg_text = seg.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+            if !seg_text.is_empty() {
+                if !formatted.is_empty() {
+                    formatted.push('\n');
+                }
+                if !spk.is_empty() {
+                    formatted.push_str(&format!("{spk}: {seg_text}"));
+                } else {
+                    formatted.push_str(seg_text);
+                }
+            }
+        }
+        assert_eq!(formatted, "A: Hello world.\nB: How are you?");
+    }
+}
+
