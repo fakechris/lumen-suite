@@ -586,6 +586,7 @@ pub fn build_engine(cfg: &EngineBuildConfig) -> Result<Option<Arc<dyn AsrEngine>
                     language: locale_to_lang_hint(&cfg.locale),
                     max_audio_bytes: cfg.max_audio_bytes,
                     engine_label: label,
+                    prompt: None,
                 };
                 let eng = OpenAiAudioAsr::new(http).map_err(|e| e.to_string())?;
                 tracing::info!(base = %base, model = %model, "ASR engine: openai_audio");
