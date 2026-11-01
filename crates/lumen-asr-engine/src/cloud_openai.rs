@@ -145,44 +145,54 @@ impl AsrEngine for OpenAiAudioAsr {
             .await
             .map_err(|_| AsrError::Inference("malformed provider response".into()))?;
 
-        let text = if is_diarize {
-            if let Some(segs) = v.get("segments").and_then(|s| s.as_array()) {
-                let mut formatted = String::new();
-                for seg in segs {
-                    let spk = seg.get("speaker").and_then(|s| s.as_str()).unwrap_or("");
-                    let seg_text = seg.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
-                    if !seg_text.is_empty() {
-                        if !formatted.is_empty() {
-                            formatted.push('\n');
-                        }
-                        if !spk.is_empty() {
-                            formatted.push_str(&format!("{spk}: {seg_text}"));
-                        } else {
-                            formatted.push_str(seg_text);
-                        }
-                    }
-                }
-                if !formatted.is_empty() {
-                    formatted
-                } else {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").trim().to_string()
-                }
-            } else {
-                v.get("text").and_then(|t| t.as_str()).unwrap_or("").trim().to_string()
-            }
-        } else {
-            v.get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
+        let text = response_text(&v, is_diarize)?;
 
         let mut result = AsrResult::new(text, AsrEngineId::OpenAiAudio);
         result.engine_label = self.config.engine_label.clone();
         result.language = lang;
         result.diagnostics.model = Some(self.config.model.clone());
         Ok(result)
+    }
+}
+
+/// Extract the transcript from a 2xx response body. A body without a usable
+/// text payload is an **error**, never a silent empty transcript: storing ""
+/// would hide a broken response (and, for callers that layer a local
+/// fallback per request, skip that fallback). An explicit `"text": ""` stays
+/// valid — that is silence. Diarize models may answer with `segments` only;
+/// the plain `text` field is then the fallback.
+fn response_text(value: &serde_json::Value, is_diarize: bool) -> Result<String, AsrError> {
+    let plain_text = || match value.get("text") {
+        Some(serde_json::Value::String(text)) => Ok(text.trim().to_string()),
+        _ => Err(AsrError::Inference(
+            "malformed provider response: missing text field".into(),
+        )),
+    };
+    if !is_diarize {
+        return plain_text();
+    }
+    let Some(segs) = value.get("segments").and_then(|s| s.as_array()) else {
+        return plain_text();
+    };
+    let mut formatted = String::new();
+    for seg in segs {
+        let spk = seg.get("speaker").and_then(|s| s.as_str()).unwrap_or("");
+        let seg_text = seg.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+        if !seg_text.is_empty() {
+            if !formatted.is_empty() {
+                formatted.push('\n');
+            }
+            if !spk.is_empty() {
+                formatted.push_str(&format!("{spk}: {seg_text}"));
+            } else {
+                formatted.push_str(seg_text);
+            }
+        }
+    }
+    if formatted.is_empty() {
+        plain_text()
+    } else {
+        Ok(formatted)
     }
 }
 
@@ -214,23 +224,44 @@ mod tests {
             ]
         });
 
-        let segs = json.get("segments").unwrap().as_array().unwrap();
-        let mut formatted = String::new();
-        for seg in segs {
-            let spk = seg.get("speaker").and_then(|s| s.as_str()).unwrap_or("");
-            let seg_text = seg.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
-            if !seg_text.is_empty() {
-                if !formatted.is_empty() {
-                    formatted.push('\n');
-                }
-                if !spk.is_empty() {
-                    formatted.push_str(&format!("{spk}: {seg_text}"));
-                } else {
-                    formatted.push_str(seg_text);
-                }
-            }
+        let text = response_text(&json, true).unwrap();
+        assert_eq!(text, "A: Hello world.\nB: How are you?");
+    }
+
+    #[test]
+    fn plain_response_text_is_trimmed_and_empty_string_is_valid() {
+        let json: serde_json::Value = serde_json::json!({"text": "  嗨  "});
+        assert_eq!(response_text(&json, false).unwrap(), "嗨");
+        // Silence: an explicit empty string is a valid transcript.
+        let silent: serde_json::Value = serde_json::json!({"text": ""});
+        assert_eq!(response_text(&silent, false).unwrap(), "");
+    }
+
+    #[test]
+    fn missing_or_non_string_text_is_an_error_not_an_empty_transcript() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"text": 123}),
+            serde_json::json!({"duration": 1.0}),
+            serde_json::json!({"segments": []}), // diarize, no text fallback
+        ] {
+            let err = response_text(&body, false).unwrap_err().to_string();
+            assert!(err.contains("malformed"), "{body}: {err}");
         }
-        assert_eq!(formatted, "A: Hello world.\nB: How are you?");
+        // The same bodies as a diarize response (segments absent/empty →
+        // text fallback) error identically.
+        let err = response_text(&serde_json::json!({}), true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("malformed"), "{err}");
+    }
+
+    #[test]
+    fn diarize_segments_without_plain_text_still_transcribe() {
+        let json: serde_json::Value = serde_json::json!({
+            "segments": [{"speaker": "A", "text": "hi"}]
+        });
+        assert_eq!(response_text(&json, true).unwrap(), "A: hi");
     }
 }
 
