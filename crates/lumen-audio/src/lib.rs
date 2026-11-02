@@ -12,7 +12,7 @@ pub mod opus_sink;
 pub mod vad;
 pub mod wav_edit;
 
-pub use audio::{AudioCapture, AudioDeviceInfo, AudioError, CaptureResult};
+pub use audio::{live_tap, AudioCapture, AudioDeviceInfo, AudioError, CaptureResult, LiveChunk, LiveTap};
 pub use meeting_recorder::{
     live_tap_channel, repair_wav_header, LiveAudioPacket, LiveTapSender, MeetingAudioFormat,
     MeetingRecorder, MeetingRecorderError, RecordingSummary, RepairedWav, SampleSink,
