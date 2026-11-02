@@ -85,10 +85,28 @@ struct SileroSession {
 }
 
 /// Cross-platform mic capture manager (Send + Sync).
+/// One mono chunk from the live capture callback, for streaming consumers
+/// (realtime cloud ASR): device-rate f32 samples in [-1, 1].
+pub struct LiveChunk {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+/// Sender half of a live capture tap. Bounded + try_send only — the audio
+/// callback must never block; a slow consumer simply misses chunks.
+pub type LiveTap = std::sync::mpsc::SyncSender<LiveChunk>;
+
+/// Create a bounded live-tap channel plus its receiver.
+pub fn live_tap() -> (LiveTap, std::sync::mpsc::Receiver<LiveChunk>) {
+    std::sync::mpsc::sync_channel(64)
+}
+
 pub struct AudioCapture {
     recording: Arc<AtomicBool>,
     preferred_device: Arc<Mutex<Option<String>>>,
     cmd_tx: Mutex<Option<Sender<AudioCmd>>>,
+    /// Optional live chunk tap, fed from the capture callback.
+    live_tap: Arc<Mutex<Option<LiveTap>>>,
     /// Latest callback chunk RMS (f32 bits); 0 when idle. Lets a VAD watcher
     /// observe the live session without locking the sample buffer.
     latest_rms: Arc<AtomicU32>,
@@ -111,6 +129,7 @@ impl AudioCapture {
 
         let (tx, rx) = mpsc::channel::<AudioCmd>();
         let rec_flag = Arc::clone(&recording);
+        let live_tap: Arc<Mutex<Option<LiveTap>>> = Arc::new(Mutex::new(None));
         // Shared only as a pointer slot; each Start installs a fresh buffer.
         let samples_slot: Arc<Mutex<Option<Arc<Mutex<Vec<f32>>>>>> = Arc::new(Mutex::new(None));
         let sample_rate = Arc::new(AtomicU32::new(0));
@@ -118,6 +137,7 @@ impl AudioCapture {
         let latest_rms = Arc::new(AtomicU32::new(0));
         let rate_flag = Arc::clone(&sample_rate);
         let samples_for_thread = Arc::clone(&samples_slot);
+        let tap_for_thread = Arc::clone(&live_tap);
         let epoch_for_thread = Arc::clone(&epoch);
         let rms_for_thread = Arc::clone(&latest_rms);
         #[cfg(feature = "silero")]
@@ -153,6 +173,7 @@ impl AudioCapture {
                                 &rate_flag,
                                 &epoch_for_thread,
                                 &samples_for_thread,
+                                &tap_for_thread,
                                 &rms_for_thread,
                                 silero_feed,
                                 &mut stream_slot,
@@ -230,6 +251,7 @@ impl AudioCapture {
             latest_rms,
             #[cfg(feature = "silero")]
             silero,
+            live_tap,
         }
     }
 
@@ -303,6 +325,13 @@ impl AudioCapture {
             .map(|session| session.vad.elapsed_ms())
     }
 
+    /// Install (or clear) a live chunk tap. Call before `start`; the
+    /// callback feeds it for the whole recording. Bounded try_send only, so
+    /// the audio thread never blocks on a slow consumer.
+    pub fn set_live_tap(&self, tap: Option<LiveTap>) {
+        *self.live_tap.lock() = tap;
+    }
+
     pub fn set_device(&self, name: Option<String>) {
         *self.preferred_device.lock() = name;
     }
@@ -372,6 +401,7 @@ fn start_on_thread(
     sample_rate_atom: &AtomicU32,
     epoch: &Arc<AtomicU64>,
     samples_slot: &Arc<Mutex<Option<Arc<Mutex<Vec<f32>>>>>>,
+    live_tap: &Arc<Mutex<Option<LiveTap>>>,
     latest_rms: &Arc<AtomicU32>,
     silero_feed: SileroFeed,
     stream_slot: &mut Option<cpal::Stream>,
@@ -412,6 +442,7 @@ fn start_on_thread(
     *samples_slot.lock() = Some(Arc::clone(&samples_buf));
 
     let samples_cb = Arc::clone(&samples_buf);
+    let tap_cb = Arc::clone(live_tap);
     let epoch_cb = Arc::clone(epoch);
     latest_rms.store(0, Ordering::SeqCst);
     let stream_config: StreamConfig = config.clone().into();
@@ -424,6 +455,7 @@ fn start_on_thread(
             channels,
             sample_rate,
             samples_cb,
+            Arc::clone(&tap_cb),
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
@@ -436,6 +468,7 @@ fn start_on_thread(
             channels,
             sample_rate,
             samples_cb,
+            Arc::clone(&tap_cb),
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
@@ -448,6 +481,7 @@ fn start_on_thread(
             channels,
             sample_rate,
             samples_cb,
+            Arc::clone(&tap_cb),
             epoch_cb,
             session_epoch,
             Arc::clone(latest_rms),
@@ -505,6 +539,7 @@ fn build_stream<T>(
     channels: usize,
     sample_rate: u32,
     samples: Arc<Mutex<Vec<f32>>>,
+    live_tap: Arc<Mutex<Option<LiveTap>>>,
     epoch: Arc<AtomicU64>,
     session_epoch: u64,
     latest_rms: Arc<AtomicU32>,
@@ -547,6 +582,14 @@ where
                     .map(|&v| f64::from(v) * f64::from(v))
                     .sum();
                 samples.lock().extend_from_slice(&chunk_scratch);
+                // Live tap: clone the mono chunk out for streaming consumers
+                // (bounded try_send; a full channel drops the chunk).
+                if let Some(tap) = live_tap.lock().as_ref() {
+                    let _ = tap.try_send(LiveChunk {
+                        samples: chunk_scratch.clone(),
+                        sample_rate,
+                    });
+                }
                 if n > 0 {
                     latest_rms.store(
                         ((sum_sq / n as f64).sqrt() as f32).to_bits(),
