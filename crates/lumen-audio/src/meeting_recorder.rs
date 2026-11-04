@@ -822,6 +822,62 @@ impl LiveTapSender {
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+}
+
+/// A pair of independent live-tap senders sharing one `t0` (timeline origin)
+/// and track label. Audio pushed to the original sender is replicated to
+/// both; each drops independently.
+///
+/// Construct via [`fork_live_tap`].
+pub struct ForkedTapSender {
+    a: LiveTapSender,
+    b: LiveTapSender,
+}
+
+impl ForkedTapSender {
+    /// Push to both consumers; returns `true` if at least one delivered.
+    pub fn push(&self, samples: &[f32]) -> bool {
+        let ok_a = self.a.push(samples);
+        let ok_b = self.b.push(samples);
+        ok_a || ok_b
+    }
+
+    /// Drop counts per side.
+    pub fn dropped(&self) -> (u64, u64) {
+        (self.a.dropped(), self.b.dropped())
+    }
+
+    /// Consume the forked pair back into individual senders (for passing to
+    /// subsystems that each want their own `SampleSink`).
+    pub fn into_parts(self) -> (LiveTapSender, LiveTapSender) {
+        (self.a, self.b)
+    }
+}
+
+/// Create a forked live tap: two independent channels sharing one `t0`.
+/// Push to the returned `ForkedTapSender` to deliver to both consumers.
+pub fn fork_live_tap(
+    track: &'static str,
+    t0: Instant,
+) -> (ForkedTapSender, Receiver<LiveAudioPacket>, Receiver<LiveAudioPacket>) {
+    let (tx_a, rx_a) = std::sync::mpsc::sync_channel(LIVE_TAP_CAPACITY);
+    let (tx_b, rx_b) = std::sync::mpsc::sync_channel(LIVE_TAP_CAPACITY);
+    let forked = ForkedTapSender {
+        a: LiveTapSender {
+            tx: tx_a,
+            t0,
+            track,
+            dropped: Arc::new(AtomicU64::new(0)),
+        },
+        b: LiveTapSender {
+            tx: tx_b,
+            t0,
+            track,
+            dropped: Arc::new(AtomicU64::new(0)),
+        },
+    };
+    (forked, rx_a, rx_b)
 }
 
 /// Create a bounded live fan-out channel for one track. `track` labels drop

@@ -23,3 +23,5 @@ pub use vad::{trim_trailing_silence, SilenceAutoStop, TimestampAutoStop, VadActi
 #[cfg(feature = "silero")]
 pub use vad::{SileroVad, SileroVadError};
 pub use wav_edit::{copy_pcm16_wav_range, WavRangeError, WavRangeSummary};
+pub use meeting_recorder::ForkedTapSender;
+pub use meeting_recorder::fork_live_tap;
