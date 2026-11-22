@@ -110,6 +110,8 @@ enum Publish {
 enum Payload {
     /// `.tar.bz2` archive, extracted with `tar -xjf` then published.
     TarBz2(Publish),
+    /// A revision-pinned directory of original files, validated before one atomic publish.
+    PinnedFiles(&'static [PinnedFile]),
     /// Single raw file downloaded as-is, then renamed into
     /// `final_dir/file_name`. Requires [`ModelPackage::download_pin`].
     RawFile { file_name: &'static str },
@@ -121,6 +123,13 @@ enum Payload {
 struct DownloadPin {
     sha256: &'static str,
     bytes: u64,
+}
+
+/// A file within a revision-pinned remote directory.
+struct PinnedFile {
+    path: &'static str,
+    bytes: u64,
+    sha256: &'static str,
 }
 
 /// A downloadable sherpa model package.
@@ -214,6 +223,81 @@ const QWEN3_SHERPA_PACKAGE: ModelPackage = ModelPackage {
     payload: Payload::TarBz2(Publish::WholeDir),
 };
 
+/// Optional English-only model. Stored alongside the standard multilingual pack.
+pub const FOURIER_SHERPA_DIR: &str = "oruk-fourier-2b-sherpa-int8";
+
+const FOURIER_FILES: &[PinnedFile] = &[
+    PinnedFile {
+        path: "conv_frontend.onnx",
+        bytes: 48_080_440,
+        sha256: "19ddcb711237bba84f7aa385ce7c63320bcb736ce8888299064036d57a774bd9",
+    },
+    PinnedFile {
+        path: "decoder.int8.onnx",
+        bytes: 5_393_503,
+        sha256: "d252adc96e55aa858876896e20783a357fda4c38e216d5be1c7b42bf73c86e8b",
+    },
+    PinnedFile {
+        path: "decoder.int8.onnx.data",
+        bytes: 2_032_082_944,
+        sha256: "4625b41d68653f974af294b6ef5539c36e32d0477d0a2262a9157e275a09433f",
+    },
+    PinnedFile {
+        path: "encoder.int8.onnx",
+        bytes: 1_670_820,
+        sha256: "61255ca9e30a52c0d1da59ade9327792f08e32849cb1570da19be9ed6760cef9",
+    },
+    PinnedFile {
+        path: "encoder.int8.onnx.data",
+        bytes: 306_487_296,
+        sha256: "a11a260308504627190fbf662478eec9ff95cb36b3387f257892f6fb8886e8a1",
+    },
+    PinnedFile {
+        path: "tokenizer/config.json",
+        bytes: 2_072,
+        sha256: "9306077f32e1989f6128d12a0e471a3bd612389dbd5bff81305b8f558fee9901",
+    },
+    PinnedFile {
+        path: "tokenizer/merges.txt",
+        bytes: 1_671_853,
+        sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+    },
+    PinnedFile {
+        path: "tokenizer/tokenizer.json",
+        bytes: 11_429_377,
+        sha256: "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92",
+    },
+    PinnedFile {
+        path: "tokenizer/tokenizer_config.json",
+        bytes: 10_386,
+        sha256: "e8f0641c46b7c259b8d4a34097471dab636bd5d5062f480ed7c97a3d3b3981ee",
+    },
+    PinnedFile {
+        path: "tokenizer/vocab.json",
+        bytes: 3_080_118,
+        sha256: "97dfe4fe392c23cda68fe01c60babe50a57c894fc0cf44d02c4048ad283499c3",
+    },
+];
+
+/// Check every file, including external ONNX data, without rehashing 2.4 GB on startup.
+pub fn fourier_sherpa_ready(dir: &Path) -> bool {
+    FOURIER_FILES.iter().all(|f| {
+        std::fs::metadata(dir.join(f.path))
+            .is_ok_and(|meta| meta.is_file() && meta.len() == f.bytes)
+    })
+}
+
+const FOURIER_PACKAGE: ModelPackage = ModelPackage {
+    url: "https://huggingface.co/oruk/oruk-fourier-2b/resolve/3fda023e157ce7986f137f76fcf326ed6e08fa73/onnx/sherpa-int8",
+    archive_name: FOURIER_SHERPA_DIR,
+    rel_dir: FOURIER_SHERPA_DIR,
+    slug: FOURIER_SHERPA_DIR,
+    display: "Oruk Fourier 2B (English)",
+    ready: fourier_sherpa_ready,
+    download_pin: None,
+    payload: Payload::PinnedFiles(FOURIER_FILES),
+};
+
 /// Install SenseVoice under `models_root/sensevoice`.
 ///
 /// Default `models_root` is the **shared Lumen cluster** path
@@ -289,6 +373,15 @@ pub fn download_qwen3_sherpa_package(
     download_model_package(models_root, &QWEN3_SHERPA_PACKAGE, cancel, on_progress)
 }
 
+/// Download and verify all ten files from the original English Fourier 2B model card.
+pub fn download_fourier_sherpa_package(
+    models_root: &Path,
+    cancel: &AtomicBool,
+    on_progress: impl FnMut(DownloadProgress),
+) -> Result<PathBuf, DownloadError> {
+    download_model_package(models_root, &FOURIER_PACKAGE, cancel, on_progress)
+}
+
 /// The generic install engine backing every [`ModelPackage`].
 fn download_model_package(
     models_root: &Path,
@@ -358,52 +451,40 @@ fn download_model_package(
         package.download_pin.map(|pin| pin.bytes),
     ));
 
-    let archive_str = archive_path
-        .to_str()
-        .ok_or_else(|| DownloadError::Failed("bad archive path".into()))?;
-    let mut child = Command::new("curl")
-        .args(["-fL", "--progress-bar", "-o", archive_str, package.url])
-        .spawn()
-        .map_err(|error| DownloadError::Failed(format!("curl failed to start: {error}")))?;
-    // Report live byte counts while curl streams (the .part file grows in
-    // place); total comes from the pin when one exists.
-    let mut last_reported = 0u64;
-    let status = loop {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(DownloadError::Cancelled);
-        }
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => {
-                let downloaded = std::fs::metadata(&archive_path)
-                    .map(|meta| meta.len())
-                    .unwrap_or(0);
-                if downloaded > last_reported {
-                    last_reported = downloaded;
-                    on_progress(progress(
-                        "downloading",
-                        &format!("Downloading {} model…", package.display),
-                        downloaded,
-                        package.download_pin.map(|pin| pin.bytes),
-                    ));
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-        }
+    let total = package.download_pin.map(|pin| pin.bytes);
+    let report = |bytes| {
+        progress(
+            "downloading",
+            &format!("Downloading {} model…", package.display),
+            bytes,
+            total,
+        )
     };
-    if !status.success() {
-        return Err(DownloadError::Failed(format!(
-            "download failed (curl exit {:?}). Check network or place model under {}",
-            status.code(),
-            final_dir.display()
-        )));
-    }
-
-    let bytes = std::fs::metadata(&archive_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
+    let bytes = if let Payload::PinnedFiles(files) = &package.payload {
+        let total = files.iter().map(|f| f.bytes).sum();
+        let mut completed = 0;
+        for file in *files {
+            let path = extract_tmp.join(file.path);
+            std::fs::create_dir_all(path.parent().expect("file is inside scratch directory"))?;
+            let message = format!("Downloading {}: {}", package.display, file.path);
+            let url = format!("{}/{}", package.url, file.path);
+            fetch_file(&url, &path, &final_dir, cancel, |b| {
+                on_progress(progress(
+                    "downloading",
+                    &message,
+                    completed + b,
+                    Some(total),
+                ));
+            })?;
+            verify_pinned_file(&path, file.sha256, file.bytes)?;
+            completed += file.bytes;
+        }
+        completed
+    } else {
+        fetch_file(package.url, &archive_path, &final_dir, cancel, |b| {
+            on_progress(report(b))
+        })?
+    };
 
     // Fail closed: a corrupted or tampered download is removed with the
     // scratch cleanup, never extracted or published.
@@ -417,7 +498,23 @@ fn download_model_package(
         verify_pinned_file(&archive_path, pin.sha256, pin.bytes)?;
     }
 
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DownloadError::Cancelled);
+    }
     let publish = match &package.payload {
+        Payload::PinnedFiles(_) => {
+            if !(package.ready)(&extract_tmp) {
+                return Err(DownloadError::Failed("incomplete model file bundle".into()));
+            }
+            publish_package(&extract_tmp, &final_dir, &Publish::WholeDir, &extract_tmp)?;
+            on_progress(progress(
+                "done",
+                &format!("{} ready", package.display),
+                bytes,
+                Some(bytes),
+            ));
+            return Ok(final_dir);
+        }
         Payload::RawFile { file_name } => {
             std::fs::create_dir_all(&final_dir)?;
             let target = final_dir.join(file_name);
@@ -454,7 +551,9 @@ fn download_model_package(
         .to_str()
         .ok_or_else(|| DownloadError::Failed("bad extract path".into()))?;
     let tar_status = Command::new("tar")
-        .args(["-xjf", archive_str, "-C", extract_str])
+        .arg("-xjf")
+        .arg(&archive_path)
+        .args(["-C", extract_str])
         .status()
         .map_err(|error| DownloadError::Failed(format!("tar failed: {error}")))?;
     if !tar_status.success() {
@@ -488,6 +587,55 @@ fn download_model_package(
         Some(bytes),
     ));
     Ok(final_dir)
+}
+
+/// Download one file, preserving the cluster installer's cancellation and byte progress.
+fn fetch_file(
+    url: &str,
+    target: &Path,
+    final_dir: &Path,
+    cancel: &AtomicBool,
+    mut on_bytes: impl FnMut(u64),
+) -> Result<u64, DownloadError> {
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| DownloadError::Failed("bad archive path".into()))?;
+    let mut child = Command::new("curl")
+        .args(["-fL", "--progress-bar", "-o", target_str, url])
+        .spawn()
+        .map_err(|error| DownloadError::Failed(format!("curl failed to start: {error}")))?;
+    // Report live byte counts while curl streams (the .part file grows in
+    // place); total comes from the pin when one exists.
+    let mut last_reported = 0u64;
+    let status = loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DownloadError::Cancelled);
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => {
+                let downloaded = std::fs::metadata(target)
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                if downloaded > last_reported {
+                    last_reported = downloaded;
+                    on_bytes(downloaded);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+    if !status.success() {
+        return Err(DownloadError::Failed(format!(
+            "download failed (curl exit {:?}). Check network or place model under {}",
+            status.code(),
+            final_dir.display()
+        )));
+    }
+
+    Ok(std::fs::metadata(target)?.len())
 }
 
 /// Resolve `models_root` + a `/`-separated `rel_dir` into a platform path.
@@ -664,6 +812,45 @@ mod tests {
     }
 
     #[test]
+    fn pinned_bundle_is_atomic_and_reused_offline() {
+        let source = temp_dir("bundle-source");
+        let root = temp_dir("bundle-target");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("first"), b"abc").unwrap();
+        std::fs::write(source.join("nested/second"), b"bad").unwrap();
+        static FILES: &[PinnedFile] = &[
+            PinnedFile {
+                path: "first",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            },
+            PinnedFile {
+                path: "nested/second",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            },
+        ];
+        let package = ModelPackage {
+            url: Box::leak(format!("file://{}", source.display()).into_boxed_str()),
+            ready: |dir| dir.join("nested/second").is_file(),
+            payload: Payload::PinnedFiles(FILES),
+            ..FOURIER_PACKAGE
+        };
+        let cancel = AtomicBool::new(false);
+        assert!(download_model_package(&root, &package, &cancel, |_| {}).is_err());
+        assert!(!root.join(FOURIER_SHERPA_DIR).exists());
+        std::fs::write(source.join("nested/second"), b"abc").unwrap();
+        let installed = download_model_package(&root, &package, &cancel, |_| {}).unwrap();
+        std::fs::remove_dir_all(source).unwrap();
+        assert_eq!(std::fs::read(installed.join("first")).unwrap(), b"abc");
+        assert_eq!(
+            download_model_package(&root, &package, &cancel, |_| {}).unwrap(),
+            installed
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn silero_vad_url_is_https_raw_onnx() {
         assert!(SILERO_VAD_URL.starts_with("https://"));
         assert!(SILERO_VAD_URL.ends_with(SILERO_VAD_FILE_NAME));
@@ -695,7 +882,7 @@ mod tests {
     fn publish_of(package: &ModelPackage) -> &Publish {
         match &package.payload {
             Payload::TarBz2(publish) => publish,
-            Payload::RawFile { .. } => panic!("not a tar package"),
+            _ => panic!("not a tar package"),
         }
     }
 
