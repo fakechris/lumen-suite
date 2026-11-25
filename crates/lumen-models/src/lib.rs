@@ -41,14 +41,14 @@ pub use paths::{
 
 #[cfg(feature = "download")]
 pub use download::{
-    default_models_root, download_paraformer_offline_package,
+    default_models_root, download_fourier_sherpa_package, download_paraformer_offline_package,
     download_paraformer_streaming_package, download_qwen3_sherpa_package,
-    download_sensevoice_package, download_silero_vad_package, DownloadError, DownloadProgress,
-    PARAFORMER_OFFLINE_ARCHIVE_NAME, PARAFORMER_OFFLINE_ARCHIVE_URL,
-    PARAFORMER_STREAMING_ARCHIVE_NAME, PARAFORMER_STREAMING_ARCHIVE_URL, QWEN3_SHERPA_ARCHIVE_NAME,
-    QWEN3_SHERPA_ARCHIVE_URL, QWEN3_SHERPA_BYTES, QWEN3_SHERPA_SHA256, SENSEVOICE_ARCHIVE_NAME,
-    SENSEVOICE_ARCHIVE_URL, SILERO_VAD_BYTES, SILERO_VAD_FILE_NAME, SILERO_VAD_SHA256,
-    SILERO_VAD_URL,
+    download_sensevoice_package, download_silero_vad_package, fourier_sherpa_ready, DownloadError,
+    DownloadProgress, FOURIER_SHERPA_DIR, PARAFORMER_OFFLINE_ARCHIVE_NAME,
+    PARAFORMER_OFFLINE_ARCHIVE_URL, PARAFORMER_STREAMING_ARCHIVE_NAME,
+    PARAFORMER_STREAMING_ARCHIVE_URL, QWEN3_SHERPA_ARCHIVE_NAME, QWEN3_SHERPA_ARCHIVE_URL,
+    QWEN3_SHERPA_BYTES, QWEN3_SHERPA_SHA256, SENSEVOICE_ARCHIVE_NAME, SENSEVOICE_ARCHIVE_URL,
+    SILERO_VAD_BYTES, SILERO_VAD_FILE_NAME, SILERO_VAD_SHA256, SILERO_VAD_URL,
 };
 
 #[cfg(test)]
