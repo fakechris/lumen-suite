@@ -125,8 +125,11 @@ struct DownloadPin {
     bytes: u64,
 }
 
-/// A file within a revision-pinned remote directory.
+/// A file within a revision-pinned remote package.
 struct PinnedFile {
+    /// Path relative to [`ModelPackage::url`].
+    remote: &'static str,
+    /// Local destination path inside the installed package directory.
     path: &'static str,
     bytes: u64,
     sha256: &'static str,
@@ -228,54 +231,72 @@ pub const FOURIER_SHERPA_DIR: &str = "oruk-fourier-2b-sherpa-int8";
 
 const FOURIER_FILES: &[PinnedFile] = &[
     PinnedFile {
+        remote: "onnx/sherpa-int8/conv_frontend.onnx",
         path: "conv_frontend.onnx",
         bytes: 48_080_440,
         sha256: "19ddcb711237bba84f7aa385ce7c63320bcb736ce8888299064036d57a774bd9",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/decoder.int8.onnx",
         path: "decoder.int8.onnx",
         bytes: 5_393_503,
         sha256: "d252adc96e55aa858876896e20783a357fda4c38e216d5be1c7b42bf73c86e8b",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/decoder.int8.onnx.data",
         path: "decoder.int8.onnx.data",
         bytes: 2_032_082_944,
         sha256: "4625b41d68653f974af294b6ef5539c36e32d0477d0a2262a9157e275a09433f",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/encoder.int8.onnx",
         path: "encoder.int8.onnx",
         bytes: 1_670_820,
         sha256: "61255ca9e30a52c0d1da59ade9327792f08e32849cb1570da19be9ed6760cef9",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/encoder.int8.onnx.data",
         path: "encoder.int8.onnx.data",
         bytes: 306_487_296,
         sha256: "a11a260308504627190fbf662478eec9ff95cb36b3387f257892f6fb8886e8a1",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/tokenizer/config.json",
         path: "tokenizer/config.json",
         bytes: 2_072,
         sha256: "9306077f32e1989f6128d12a0e471a3bd612389dbd5bff81305b8f558fee9901",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/tokenizer/merges.txt",
         path: "tokenizer/merges.txt",
         bytes: 1_671_853,
         sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/tokenizer/tokenizer.json",
         path: "tokenizer/tokenizer.json",
         bytes: 11_429_377,
         sha256: "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/tokenizer/tokenizer_config.json",
         path: "tokenizer/tokenizer_config.json",
         bytes: 10_386,
         sha256: "e8f0641c46b7c259b8d4a34097471dab636bd5d5062f480ed7c97a3d3b3981ee",
     },
     PinnedFile {
+        remote: "onnx/sherpa-int8/tokenizer/vocab.json",
         path: "tokenizer/vocab.json",
         bytes: 3_080_118,
         sha256: "97dfe4fe392c23cda68fe01c60babe50a57c894fc0cf44d02c4048ad283499c3",
+    },
+    // Canonical root model metadata from oruk/oruk-fourier-2b. Fetched last so
+    // Hugging Face Hub download attribution only records completed installs.
+    PinnedFile {
+        remote: "config.json",
+        path: "config.json",
+        bytes: 2_479,
+        sha256: "5bc1d99c141fc866b61efca97dcbc6412a38db25ff0934c38bf7b46fa09485a2",
     },
 ];
 
@@ -288,7 +309,7 @@ pub fn fourier_sherpa_ready(dir: &Path) -> bool {
 }
 
 const FOURIER_PACKAGE: ModelPackage = ModelPackage {
-    url: "https://huggingface.co/oruk/oruk-fourier-2b/resolve/3fda023e157ce7986f137f76fcf326ed6e08fa73/onnx/sherpa-int8",
+    url: "https://huggingface.co/oruk/oruk-fourier-2b/resolve/3fda023e157ce7986f137f76fcf326ed6e08fa73",
     archive_name: FOURIER_SHERPA_DIR,
     rel_dir: FOURIER_SHERPA_DIR,
     slug: FOURIER_SHERPA_DIR,
@@ -373,7 +394,7 @@ pub fn download_qwen3_sherpa_package(
     download_model_package(models_root, &QWEN3_SHERPA_PACKAGE, cancel, on_progress)
 }
 
-/// Download and verify all ten files from the original English Fourier 2B model card.
+/// Download and verify the pinned English Fourier 2B sherpa pack and root model config from Hugging Face.
 pub fn download_fourier_sherpa_package(
     models_root: &Path,
     cancel: &AtomicBool,
@@ -444,14 +465,17 @@ fn download_model_package(
     let extract_tmp = models_root.join(format!(".{}-extract-{process_id}", package.slug));
     let _scratch = DownloadScratch::new(archive_path.clone(), extract_tmp.clone());
 
+    let total = match &package.payload {
+        Payload::PinnedFiles(files) => Some(files.iter().map(|f| f.bytes).sum()),
+        _ => package.download_pin.map(|pin| pin.bytes),
+    };
     on_progress(progress(
         "downloading",
         &format!("Downloading {} model…", package.display),
         0,
-        package.download_pin.map(|pin| pin.bytes),
+        total,
     ));
 
-    let total = package.download_pin.map(|pin| pin.bytes);
     let report = |bytes| {
         progress(
             "downloading",
@@ -461,13 +485,13 @@ fn download_model_package(
         )
     };
     let bytes = if let Payload::PinnedFiles(files) = &package.payload {
-        let total = files.iter().map(|f| f.bytes).sum();
+        let total = total.expect("pinned files always have a known total");
         let mut completed = 0;
         for file in *files {
             let path = extract_tmp.join(file.path);
             std::fs::create_dir_all(path.parent().expect("file is inside scratch directory"))?;
             let message = format!("Downloading {}: {}", package.display, file.path);
-            let url = format!("{}/{}", package.url, file.path);
+            let url = format!("{}/{}", package.url, file.remote);
             fetch_file(&url, &path, &final_dir, cancel, |b| {
                 on_progress(progress(
                     "downloading",
@@ -815,39 +839,111 @@ mod tests {
     fn pinned_bundle_is_atomic_and_reused_offline() {
         let source = temp_dir("bundle-source");
         let root = temp_dir("bundle-target");
-        std::fs::create_dir_all(source.join("nested")).unwrap();
-        std::fs::write(source.join("first"), b"abc").unwrap();
-        std::fs::write(source.join("nested/second"), b"bad").unwrap();
+        std::fs::create_dir_all(source.join("remote/nested")).unwrap();
+        std::fs::write(source.join("remote/first"), b"abc").unwrap();
+        std::fs::write(source.join("remote/nested/second"), b"bad").unwrap();
+        std::fs::write(source.join("config.json"), b"abc").unwrap();
         static FILES: &[PinnedFile] = &[
             PinnedFile {
+                remote: "remote/first",
                 path: "first",
                 bytes: 3,
                 sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             },
             PinnedFile {
+                remote: "remote/nested/second",
                 path: "nested/second",
+                bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            },
+            PinnedFile {
+                remote: "config.json",
+                path: "config.json",
                 bytes: 3,
                 sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             },
         ];
         let package = ModelPackage {
             url: Box::leak(format!("file://{}", source.display()).into_boxed_str()),
-            ready: |dir| dir.join("nested/second").is_file(),
+            ready: |dir| dir.join("nested/second").is_file() && dir.join("config.json").is_file(),
             payload: Payload::PinnedFiles(FILES),
             ..FOURIER_PACKAGE
         };
         let cancel = AtomicBool::new(false);
         assert!(download_model_package(&root, &package, &cancel, |_| {}).is_err());
         assert!(!root.join(FOURIER_SHERPA_DIR).exists());
-        std::fs::write(source.join("nested/second"), b"abc").unwrap();
+        std::fs::write(source.join("remote/nested/second"), b"abc").unwrap();
         let installed = download_model_package(&root, &package, &cancel, |_| {}).unwrap();
         std::fs::remove_dir_all(source).unwrap();
         assert_eq!(std::fs::read(installed.join("first")).unwrap(), b"abc");
+        assert_eq!(
+            std::fs::read(installed.join("nested/second")).unwrap(),
+            b"abc"
+        );
+        assert_eq!(
+            std::fs::read(installed.join("config.json")).unwrap(),
+            b"abc"
+        );
+        assert!(!installed.join("remote").exists());
         assert_eq!(
             download_model_package(&root, &package, &cancel, |_| {}).unwrap(),
             installed
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fourier_package_pins_canonical_hf_root_config_and_sherpa_files() {
+        let prefix = "https://huggingface.co/oruk/oruk-fourier-2b/resolve/";
+        let rev = FOURIER_PACKAGE
+            .url
+            .strip_prefix(prefix)
+            .expect("Fourier package must pin a commit under oruk/oruk-fourier-2b");
+        assert_eq!(
+            rev.len(),
+            40,
+            "pinned revision must be a 40-char commit SHA"
+        );
+        assert!(rev.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        // Root config.json must be fetched last from the repo root so Hugging
+        // Face Hub download attribution counts completed installs.
+        let last = FOURIER_FILES.last().expect("FOURIER_FILES is non-empty");
+        assert_eq!(last.remote, "config.json");
+        assert_eq!(last.path, "config.json");
+        assert_eq!(last.bytes, 2_479);
+
+        let mut local_paths = std::collections::HashSet::new();
+        for f in FOURIER_FILES {
+            assert!(local_paths.insert(f.path), "duplicate path: {}", f.path);
+            assert!(f.bytes > 0);
+            assert_eq!(f.sha256.len(), 64);
+            assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        assert!(local_paths.contains("conv_frontend.onnx"));
+        assert!(local_paths.contains("encoder.int8.onnx"));
+        assert!(local_paths.contains("encoder.int8.onnx.data"));
+        assert!(local_paths.contains("decoder.int8.onnx"));
+        assert!(local_paths.contains("decoder.int8.onnx.data"));
+        assert!(local_paths.contains("tokenizer/config.json"));
+        assert!(local_paths.contains("tokenizer/vocab.json"));
+        assert!(local_paths.contains("tokenizer/merges.txt"));
+        assert!(local_paths.contains("tokenizer/tokenizer.json"));
+        assert!(local_paths.contains("tokenizer/tokenizer_config.json"));
+    }
+
+    #[test]
+    fn fourier_layout_with_root_config_satisfies_qwen_ready() {
+        let dir = temp_dir("fourier-qwen-ready");
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        for f in FOURIER_FILES {
+            let path = dir.join(f.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        assert!(qwen_ready(&dir));
+        assert!(!fourier_sherpa_ready(&dir));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
